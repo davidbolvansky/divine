@@ -163,7 +163,7 @@ void enumerateAnnos( ::llvm::Module &m, Yield &&yield ) {
                            .cast< ::llvm::GlobalVariable >().operand( 0 )
                            .cast< ::llvm::ConstantDataArray >()
                            .freeze();
-                yield( val, Annotation( anno->getAsCString() ) );
+                yield( val, Annotation( anno->getAsCString().str() ) );
             }
         }
     }
@@ -244,7 +244,7 @@ inline void writeModule( ::llvm::Module *m, std::string out ) {
     verifyModule( *m );
     std::error_code serr;
     brq::create_file( out );
-    ::llvm::raw_fd_ostream fs( out.c_str(), serr, ::llvm::sys::fs::F_None );
+    ::llvm::raw_fd_ostream fs( out.c_str(), serr, ::llvm::sys::fs::OF_None );
     if ( serr )
         _throwLLVMError( serr );
     WriteBitcodeToFile( *m, fs );
@@ -298,7 +298,7 @@ namespace llvm
     template< typename stream, typename T >
     auto operator<<( stream &o, const T &v )
         -> std::enable_if_t< !std::is_convertible_v< stream &, raw_ostream & >,
-                             decltype( v.print( std::declval< raw_ostream & >() ), o << "" ) >
+                             decltype( v.print( std::declval< raw_ostream & >() ), o << std::string() ) >
     {
         std::string s;
         raw_string_ostream lstream( s );

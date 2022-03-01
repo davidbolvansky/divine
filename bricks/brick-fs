@@ -36,6 +36,7 @@
 #include <fcntl.h>
 #endif
 
+#include <functional>
 #include <vector>
 #include <string>
 #include <cerrno>
@@ -45,6 +46,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <memory>
+#include <limits>
 
 namespace brq
 {

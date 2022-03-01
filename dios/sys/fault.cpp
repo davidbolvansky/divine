@@ -213,7 +213,7 @@ namespace __dios
         }
         else // Simfail
         {
-            if ( cfg | FaultFlag::Enabled )
+            if ( cfg & FaultFlag::Enabled )
                 return _DiOS_FC_SimFail;
             else
                 return _DiOS_FC_NoFail;

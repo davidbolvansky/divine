@@ -49,7 +49,7 @@ int main( int argc, char **argv ) {
     module = parsed.get().get();
 
     std::error_code serr;
-    ::llvm::raw_fd_ostream outs( to, serr, ::llvm::sys::fs::F_None );
+    ::llvm::raw_fd_ostream outs( to, serr, ::llvm::sys::fs::OF_None );
 
     for ( char **arg = argv + 3; *arg; ++arg )
         driver.setup( *arg );

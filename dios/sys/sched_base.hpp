@@ -8,6 +8,7 @@
 #include <dios/sys/task.hpp>
 #include <dios/sys/options.hpp>
 #include <dios/sys/syscall.hpp>
+#include <dios/sys/stdlibwrap.hpp>
 
 #include <cstring>
 #include <signal.h>

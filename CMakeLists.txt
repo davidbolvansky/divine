@@ -42,7 +42,7 @@ set( LLVM_INCLUDE_EXAMPLES OFF CACHE BOOL "" )
 set( LLVM_INCLUDE_DOCS OFF CACHE BOOL "" )
 set( LLVM_INCLUDE_RUNTIMES OFF CACHE BOOL "" )
 
-set( LLVM_ENABLE_PIC OFF CACHE BOOL "" )
+set( LLVM_ENABLE_PIC ON CACHE BOOL "" )
 set( LLVM_ENABLE_RTTI ON CACHE BOOL "" )
 set( LLVM_ENABLE_TIMESTAMPS OFF CACHE BOOL "" )
 set( LLVM_ENABLE_ZLIB ON CACHE BOOL "" )
@@ -51,6 +51,10 @@ set( LLVM_ENABLE_WARNINGS ON CACHE BOOL "" )
 set( LLVM_ENABLE_OPTIMIZE OFF CACHE BOOL "" )
 set( LLVM_ENABLE_PEDANTIC ON CACHE BOOL "" )
 set( LLVM_DISABLE_BINDINGS ON CACHE BOOL "" )
+set( LLVM_INCLUDE_BENCHMARKS OFF CACHE BOOL "" )
+set( LLVM_APPEND_VC_REV OFF CACHE BOOL "" )
+set( LLVM_ENABLE_DUMP ON CACHE BOOL "" )
+set( LLVM_ENABLE_BINDINGS OFF CACHE BOOL "" )
 
 set( CLANG_INCLUDE_DOCS OFF CACHE BOOL "" )
 
@@ -82,12 +86,9 @@ set( STATIC_BUILD OFF CACHE BOOL "link binaries statically" )
 
 project( divine-meta )
 enable_language( CXX )
-if ( TOOLCHAIN )
-    set( CMAKE_CXX_STANDARD 11 )
+    set( CMAKE_CXX_STANDARD 17 )
     set( CMAKE_CXX_STANDARD_REQUIRED ON )
-else()
-    set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++1z" )
-endif()
+
 if( LIBCXX_HAS_MUSL_LIBC )
     set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_LIBCPP_HAS_MUSL_LIBC")
 endif()
@@ -104,6 +105,7 @@ function( build_clang )
   # They are used as destination of target generators.
   set( LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/clang/bin )
   set( LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/clang/lib${LLVM_LIBDIR_SUFFIX} )
+
   add_subdirectory( clang )
 endfunction()
 
@@ -125,20 +127,25 @@ function( build_llvm )
   include( TableGen )
   include( HandleLLVMOptions )
 
+
   if ( TOOLCHAIN )
     add_subdirectory( dios/libunwind )
     build_libcxx( dios )
   endif()
 
   # set( PACKAGE_VERSION "${LLVM_PACKAGE_VERSION}" )
-  set( PACKAGE_VERSION "7.0.0" )
+  set( PACKAGE_VERSION "13.0.0" )
   add_subdirectory( llvm )
+
   include_directories( llvm/include ${CMAKE_CURRENT_BINARY_DIR}/llvm/include )
   set( LLVM_TARGETS_TO_BUILD ${LLVM_TARGETS_TO_BUILD} PARENT_SCOPE )
+
   build_clang()
+
   include_directories( clang/include ${CMAKE_CURRENT_BINARY_DIR}/clang/include )
 
   add_subdirectory( lld )
+
   include_directories( lld/include ${CMAKE_CURRENT_BINARY_DIR}/lld/include )
 endfunction()
 
@@ -151,7 +158,7 @@ set( DIVINE_DEFINES "-DDIVINE_RELAX_WARNINGS=_Pragma( \"GCC diagnostic push\" ) 
  _Pragma( \"GCC diagnostic ignored \\\"-Wunused-parameter\\\"\" )"
  "-DDIVINE_UNRELAX_WARNINGS=_Pragma( \"GCC diagnostic pop\" )" -D__divm__
  -Wno-c99-extensions -Wno-vla-extension -Wno-gnu-conditional-omitted-operand
- -Wno-c++1z-extensions -Wno-gnu-anonymous-struct -Wno-zero-length-array )
+ -Wno-c++1z-extensions -Wno-gnu-anonymous-struct -Wno-zero-length-array -fno-sized-deallocation )
 
 # find_package( LLVM 3.7 REQUIRED )
 find_package( Perl )
@@ -252,10 +259,10 @@ add_custom_target( check )
 add_custom_target( unit )
 
 add_custom_target( llvm-utils )
+
 add_dependencies( llvm-utils llvm-dis llvm-as llvm-nm llvm-diff llvm-objdump llc )
 
 if ( NOT TOOLCHAIN )
-
   if( OPT_TBBMALLOC )
     add_subdirectory( external/tbbmalloc )
   endif()
@@ -281,6 +288,7 @@ if ( NOT TOOLCHAIN )
 
   add_subdirectory( doc )
   add_subdirectory( dios )
+
   if ( OPT_STP )
     add_subdirectory( minisat )
     add_subdirectory( cryptoms )

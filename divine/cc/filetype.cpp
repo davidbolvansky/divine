@@ -15,6 +15,7 @@
 #include <divine/cc/filetype.hpp>
 
 DIVINE_RELAX_WARNINGS
+#include <llvm/ADT/Twine.h>
 #include <llvm/BinaryFormat/Magic.h>
 DIVINE_UNRELAX_WARNINGS
 
@@ -53,7 +54,8 @@ namespace divine::cc
         // shared libraries tend to end in numbers, e.g. so.1.2.11
         // we are avoiding a regex here by checking the magic number
         file_magic magic;
-        identify_magic( name, magic );
+        llvm::Twine path(name);
+        identify_magic( path, magic );
         // object files with suffix other than .o
         if ( magic == file_magic::elf_relocatable )
             return FileType::Obj;

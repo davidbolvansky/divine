@@ -105,7 +105,7 @@ namespace divine::cc
             for ( size_t i = 0; i < ld_job.args.size(); ++i )
                 lld_job_c.push_back( ld_job.args[i].c_str() );
 
-            bool linked = lld::elf::link( lld_job_c, false );
+            bool linked = lld::elf::link( lld_job_c, false, llvm::outs(), llvm::errs() );
             if ( !linked )
                 throw cc::CompileError( "lld failed, not linked" );
         }

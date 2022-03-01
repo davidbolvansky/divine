@@ -11,6 +11,8 @@
 #include <sys/trace.h>
 #include <sys/fault.h>
 
+#include <dios.h>
+
 #ifndef REGTEST
 
 #include <_PDCLIB/cdefs.h>

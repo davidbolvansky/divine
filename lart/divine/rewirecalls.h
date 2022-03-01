@@ -91,7 +91,7 @@ struct rewire_calls_t {
         // target is typically from clonned module -> we need to get declaration
         // into our module
         auto target_func = llvm::dyn_cast< llvm::Function >(
-        _module.getOrInsertFunction( target->getName(), target->getFunctionType() ) );
+        _module.getOrInsertFunction( target->getName(), target->getFunctionType() ).getCallee() );
 
         _enhance( _module.getFunction( where->getName() ), target_func );
     }

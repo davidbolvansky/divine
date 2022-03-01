@@ -83,7 +83,7 @@ void create_explicit_calls(
         llvm::Type::getVoidTy( ctx ), false );
 
     auto func =
-        llvm::dyn_cast< llvm::Function >( module.getOrInsertFunction( name, f_type ) );
+        llvm::dyn_cast< llvm::Function >( module.getOrInsertFunction( name, f_type ).getCallee() );
 
     auto block = llvm::BasicBlock::Create( ctx, "entry", func );
     llvm::IRBuilder<> irb{ block };

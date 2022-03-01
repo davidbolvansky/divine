@@ -1,9 +1,8 @@
 //==--- DiagnosticLexKinds.td - liblex diagnostics ------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,12 +31,12 @@ def warn_cxx98_compat_less_colon_colon : Warning<
   InGroup<CXX98Compat>, DefaultIgnore;
 
 def warn_cxx17_compat_spaceship : Warning<
-  "'<=>' operator is incompatible with C++ standards before C++2a">,
-  InGroup<CXXPre2aCompat>, DefaultIgnore;
-def warn_cxx2a_compat_spaceship : Warning<
-  "'<=>' is a single token in C++2a; "
+  "'<=>' operator is incompatible with C++ standards before C++20">,
+  InGroup<CXXPre20Compat>, DefaultIgnore;
+def warn_cxx20_compat_spaceship : Warning<
+  "'<=>' is a single token in C++20; "
   "add a space to avoid a change in behavior">,
-  InGroup<CXX2aCompat>;
+  InGroup<CXX20Compat>;
 
 // Trigraphs.
 def trigraph_ignored : Warning<"trigraph ignored">, InGroup<Trigraphs>;
@@ -79,8 +78,8 @@ def ext_token_used : Extension<"extension used">,
 
 def warn_cxx11_keyword : Warning<"'%0' is a keyword in C++11">,
   InGroup<CXX11Compat>, DefaultIgnore;
-def warn_cxx2a_keyword : Warning<"'%0' is a keyword in C++2a">,
-  InGroup<CXX2aCompat>, DefaultIgnore;
+def warn_cxx20_keyword : Warning<"'%0' is a keyword in C++20">,
+  InGroup<CXX20Compat>, DefaultIgnore;
 
 def ext_unterminated_char_or_string : ExtWarn<
   "missing terminating %select{'|'\"'}0 character">, InGroup<InvalidPPToken>;
@@ -105,10 +104,10 @@ def warn_cxx98_compat_raw_string_literal : Warning<
   "raw string literals are incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
 
-def ext_multichar_character_literal : ExtWarn<
+def warn_multichar_character_literal : Warning<
   "multi-character character constant">, InGroup<MultiChar>;
-def ext_four_char_character_literal : Extension<
-  "multi-character character constant">, InGroup<FourByteMultiChar>;
+def warn_four_char_character_literal : Warning<
+  "multi-character character constant">, InGroup<FourByteMultiChar>, DefaultIgnore;
 
 
 // Unicode and UCNs
@@ -122,6 +121,9 @@ def ext_unicode_whitespace : ExtWarn<
 def warn_utf8_symbol_homoglyph : Warning<
   "treating Unicode character <U+%0> as identifier character rather than "
   "as '%1' symbol">, InGroup<DiagGroup<"unicode-homoglyph">>;
+def warn_utf8_symbol_zero_width : Warning<
+  "identifier contains Unicode character <U+%0> that is invisible in "
+  "some environments">, InGroup<DiagGroup<"unicode-zero-width">>;
 
 def err_hex_escape_no_digits : Error<
   "\\%0 used with no following hex digits">;
@@ -173,10 +175,13 @@ def ext_unknown_escape : ExtWarn<"unknown escape sequence '\\%0'">,
 def err_invalid_digit : Error<
   "invalid digit '%0' in %select{decimal|octal|binary}1 constant">;
 def err_invalid_suffix_constant : Error<
-  "invalid suffix '%0' on %select{integer|floating}1 constant">;
+  "invalid suffix '%0' on %select{integer|floating|fixed-point}1 constant">;
 def warn_cxx11_compat_digit_separator : Warning<
   "digit separators are incompatible with C++ standards before C++14">,
   InGroup<CXXPre14Compat>, DefaultIgnore;
+def warn_c2x_compat_digit_separator : Warning<
+  "digit separators are incompatible with C standards before C2x">,
+  InGroup<CPre2xCompat>, DefaultIgnore;
 def err_digit_separator_not_between_digits : Error<
   "digit separator cannot appear at %select{start|end}0 of digit sequence">;
 def warn_extraneous_char_constant : Warning<
@@ -255,13 +260,6 @@ def warn_bad_character_encoding : ExtWarn<
 def err_lexing_string : Error<"failure when lexing a string">;
 def err_placeholder_in_source : Error<"editor placeholder in source file">;
 
-
-//===----------------------------------------------------------------------===//
-// PTH Diagnostics
-//===----------------------------------------------------------------------===//
-def err_invalid_pth_file : Error<
-    "invalid or corrupt PTH file '%0'">;
-
 //===----------------------------------------------------------------------===//
 // Preprocessor Diagnostics
 //===----------------------------------------------------------------------===//
@@ -273,12 +271,14 @@ def err_pp_hash_error : Error<"%0">;
 }
 
 def pp_include_next_in_primary : Warning<
-  "#include_next in primary source file">,
+  "#include_next in primary source file; "
+  "will search from start of include path">,
   InGroup<DiagGroup<"include-next-outside-header">>;
 def pp_include_macros_out_of_predefines : Error<
   "the #__include_macros directive is only for internal use by -imacros">;
 def pp_include_next_absolute_path : Warning<
-  "#include_next with absolute path">,
+  "#include_next in file found relative to primary source file or found by "
+  "absolute path; will search from start of include path">,
   InGroup<DiagGroup<"include-next-absolute-path">>;
 def ext_c99_whitespace_required_after_macro_name : ExtWarn<
   "ISO C99 requires whitespace after the macro name">, InGroup<C99>;
@@ -300,6 +300,13 @@ def pp_pragma_once_in_main_file : Warning<"#pragma once in main file">,
 def pp_pragma_sysheader_in_main_file : Warning<
   "#pragma system_header ignored in main file">,
   InGroup<DiagGroup<"pragma-system-header-outside-header">>;
+
+def err_pragma_include_instead_not_sysheader : Error<
+  "'#pragma clang include_instead' cannot be used outside of system headers">;
+def err_pragma_include_instead_system_reserved : Error<
+  "header '%0' is an implementation detail; #include %select{'%2'|either '%2' "
+  "or '%3'|one of %2}1 instead">;
+
 def pp_poisoning_existing_macro : Warning<"poisoning existing macro">;
 def pp_out_of_date_dependency : Warning<
   "current file is older than dependency %0">;
@@ -315,6 +322,9 @@ def pp_macro_not_used : Warning<"macro is not used">, DefaultIgnore,
 def warn_pp_undef_identifier : Warning<
   "%0 is not defined, evaluates to 0">,
   InGroup<DiagGroup<"undef">>, DefaultIgnore;
+def warn_pp_undef_prefix : Warning<
+  "%0 is not defined, evaluates to 0">,
+  InGroup<DiagGroup<"undef-prefix">>, DefaultIgnore;
 def warn_pp_ambiguous_macro : Warning<
   "ambiguous expansion of macro %0">, InGroup<AmbiguousMacro>;
 def note_pp_ambiguous_macro_chosen : Note<
@@ -396,9 +406,10 @@ def warn_cxx98_compat_empty_fnmacro_arg : Warning<
   "empty macro arguments are incompatible with C++98">,
   InGroup<CXX98CompatPedantic>, DefaultIgnore;
 def note_macro_here : Note<"macro %0 defined here">;
+def note_macro_expansion_here : Note<"expansion of macro %0 requested here">;
 
-def err_pp_opencl_variadic_macros :
-  Error<"variadic macros not supported in OpenCL">;
+def ext_pp_opencl_variadic_macros : Extension<
+  "variadic macros are a Clang extension in OpenCL">;
 
 def err_pp_invalid_directive : Error<"invalid preprocessing directive">;
 def err_pp_directive_required : Error<
@@ -409,13 +420,27 @@ def err_pp_through_header_not_found : Error<
 def err_pp_through_header_not_seen : Error<
   "#include of '%0' not seen while attempting to "
   "%select{create|use}1 precompiled header">, DefaultFatal;
+def err_pp_pragma_hdrstop_not_seen : Error<
+  "#pragma hdrstop not seen while attempting to use precompiled header">,
+  DefaultFatal;
 def warn_pp_macro_def_mismatch_with_pch : Warning<
   "definition of macro %0 does not match definition in precompiled header">,
   InGroup<ClangClPch>;
-def err_pp_file_not_found_not_fatal : Error<
-  "'%0' file not found with <angled> include; use \"quotes\" instead">;
+def warn_pp_hdrstop_filename_ignored : Warning<
+  "#pragma hdrstop filename not supported, "
+  "/Fp can be used to specify precompiled header filename">,
+  InGroup<ClangClPch>;
+def err_pp_file_not_found_angled_include_not_fatal : Error<
+  "'%0' file not found with <angled> %select{include|import}1; "
+  "use \"quotes\" instead">;
+def err_pp_file_not_found_typo_not_fatal
+    : Error<"'%0' file not found, did you mean '%1'?">;
+def note_pp_framework_without_header : Note<
+  "did not find header '%0' in framework '%1' (loaded from '%2')">;
 def err_pp_error_opening_file : Error<
   "error opening file '%0': %1">, DefaultFatal;
+def err_pp_including_mainfile_in_preamble : Error<
+  "main file cannot be included recursively when building a preamble">;
 def err_pp_empty_filename : Error<"empty filename">;
 def err_pp_include_too_deep : Error<"#include nested too deeply">;
 def err_pp_expects_filename : Error<"expected \"FILENAME\" or <FILENAME>">;
@@ -437,9 +462,11 @@ def err_pp_malformed_ident : Error<"invalid #ident directive">;
 def err_pp_unterminated_conditional : Error<
   "unterminated conditional directive">;
 def pp_err_else_after_else : Error<"#else after #else">;
-def pp_err_elif_after_else : Error<"#elif after #else">;
+def pp_err_elif_after_else : Error<
+  "%select{#elif|#elifdef|#elifndef}0 after #else">;
 def pp_err_else_without_if : Error<"#else without #if">;
-def pp_err_elif_without_if : Error<"#elif without #if">;
+def pp_err_elif_without_if : Error<
+  "%select{#elif|#elifdef|#elifndef}0 without #if">;
 def err_pp_endif_without_if : Error<"#endif without #if">;
 def err_pp_expected_value_in_expr : Error<"expected value in expression">;
 def err_pp_expected_rparen : Error<"expected ')' in preprocessor expression">;
@@ -499,6 +526,17 @@ def warn_pragma_warning_expected_number :
   ExtWarn<"#pragma warning expected a warning number">,
   InGroup<UnknownPragmas>;
 
+// - #pragma execution_character_set(...)
+def warn_pragma_exec_charset_expected :
+  ExtWarn<"#pragma execution_character_set expected '%0'">,
+  InGroup<UnknownPragmas>;
+def warn_pragma_exec_charset_spec_invalid :
+  ExtWarn<"#pragma execution_character_set expected 'push' or 'pop'">,
+  InGroup<UnknownPragmas>;
+def warn_pragma_exec_charset_push_invalid :
+   ExtWarn<"#pragma execution_character_set invalid value '%0', only 'UTF-8' is supported">,
+   InGroup<UnknownPragmas>;
+
 def err__Pragma_malformed : Error<
   "_Pragma takes a parenthesized string literal">;
 def err_pragma_message_malformed : Error<
@@ -540,6 +578,8 @@ def warn_pragma_debug_unexpected_command : Warning<
   "unexpected debug command '%0'">, InGroup<IgnoredPragmas>;
 def warn_pragma_debug_missing_argument : Warning<
   "missing argument to debug command '%0'">, InGroup<IgnoredPragmas>;
+def warn_pragma_debug_unknown_module : Warning<
+  "unknown module '%0'">, InGroup<IgnoredPragmas>;
 // #pragma module
 def err_pp_expected_module_name : Error<
   "expected %select{identifier after '.' in |}0module name">;
@@ -558,8 +598,6 @@ def err_pp_module_end_without_module_begin : Error<
   "'#pragma clang module end'">;
 def note_pp_module_begin_here : Note<
   "entering module '%0' due to this pragma">;
-def err_pp_module_build_pth : Error<
-  "'#pragma clang module build' not supported in pretokenized header">;
 def err_pp_module_build_missing_end : Error<
   "no matching '#pragma clang module endbuild' for this '#pragma clang module build'">;
 
@@ -624,7 +662,8 @@ def err_pp_double_begin_of_arc_cf_code_audited : Error<
 def err_pp_unmatched_end_of_arc_cf_code_audited : Error<
   "not currently inside '#pragma clang arc_cf_code_audited'">;
 def err_pp_include_in_arc_cf_code_audited : Error<
-  "cannot #include files inside '#pragma clang arc_cf_code_audited'">;
+  "cannot %select{#include files|import headers}0 "
+  "inside '#pragma clang arc_cf_code_audited'">;
 def err_pp_eof_in_arc_cf_code_audited : Error<
   "'#pragma clang arc_cf_code_audited' was not ended within this file">;
 
@@ -668,6 +707,9 @@ def err_mmap_missing_module_unqualified : Error<
   "no module named '%0' visible from '%1'">;
 def err_mmap_missing_module_qualified : Error<
   "no module named '%0' in '%1'">;
+def err_mmap_missing_parent_module: Error<
+  "no module named '%0' %select{found|in '%2'}1, "
+  "parent module must be defined before the submodule">;
 def err_mmap_top_level_inferred_submodule : Error<
   "only submodules and framework modules may be inferred with wildcard syntax">;
 def err_mmap_inferred_no_umbrella : Error<
@@ -758,6 +800,14 @@ def warn_module_conflict : Warning<
   "module '%0' conflicts with already-imported module '%1': %2">,
   InGroup<ModuleConflict>;
 
+// C++20 modules
+def err_header_import_semi_in_macro : Error<
+  "semicolon terminating header import declaration cannot be produced "
+  "by a macro">;
+def err_header_import_not_header_unit : Error<
+  "header file %0 (aka '%1') cannot be imported because "
+  "it is not known to be a header unit">;
+
 def warn_header_guard : Warning<
   "%0 is used as a header guard here, followed by #define of a different macro">,
   InGroup<DiagGroup<"header-guard">>;
@@ -779,9 +829,19 @@ def err_pp_double_begin_of_assume_nonnull : Error<
 def err_pp_unmatched_end_of_assume_nonnull : Error<
   "not currently inside '#pragma clang assume_nonnull'">;
 def err_pp_include_in_assume_nonnull : Error<
-  "cannot #include files inside '#pragma clang assume_nonnull'">;
+  "cannot %select{#include files|import headers}0 "
+  "inside '#pragma clang assume_nonnull'">;
 def err_pp_eof_in_assume_nonnull : Error<
   "'#pragma clang assume_nonnull' was not ended within this file">;
+
+}
+
+let CategoryName = "Dependency Directive Source Minimization Issue" in {
+
+def err_dep_source_minimizer_missing_sema_after_at_import : Error<
+  "could not find ';' after @import">;
+def err_dep_source_minimizer_unexpected_tokens_at_import : Error<
+  "unexpected extra tokens at end of @import declaration">;
 
 }
 

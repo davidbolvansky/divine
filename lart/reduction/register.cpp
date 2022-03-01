@@ -94,7 +94,7 @@ struct DeadRegisterZeoring {
                             .map( []( llvm::BasicBlock &bb ) { return &*bb.getFirstInsertionPt(); } )
                             .filter( [&]( llvm::Instruction *ip ) { return dt.dominates( i, ip ); } )
                             .freeze();
-                    else if ( llvm::isa< llvm::TerminatorInst >( u ) || llvm::isa< llvm::PHINode >( u ) )
+                    else if ( u->isTerminator() || llvm::isa< llvm::PHINode >( u ) )
                         return query::owningQuery( std::vector< llvm::Instruction * >{ } ).freeze();
                     else
                         return query::owningQuery( std::vector< llvm::Instruction * >{
@@ -107,7 +107,7 @@ struct DeadRegisterZeoring {
                 .freeze();
             if ( i->getNumUses() == 0 ) {
                 ASSERT( inserts.empty() );
-                if ( !llvm::isa< llvm::TerminatorInst >( i ) && !llvm::isa< llvm::PHINode >( i ) )
+                if ( !i->isTerminator() && !llvm::isa< llvm::PHINode >( i ) )
                     inserts.push_back( &*std::next( llvm::BasicBlock::iterator( i ) ) );
             }
             for ( auto *ip : inserts ) {

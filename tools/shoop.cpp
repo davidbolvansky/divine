@@ -270,7 +270,7 @@ llvm::Function *get_symbolic_value_getter( llvm::Module *mod, llvm::Type *type )
         assert( 0 && "called 'get_symbolic_value_getter' with a non-scalar value" );
 
     // We don't accept different signatures
-    return llvm::cast< llvm::Function >( mod->getOrInsertFunction( name, fun_type ) );
+    return llvm::cast< llvm::Function >( mod->getOrInsertFunction( name, fun_type ).getCallee() );
 }
 
 bool verify_queue( std::queue< llvm::Function * > &queue, std::shared_ptr< llvm::LLVMContext > ctx )
@@ -309,7 +309,7 @@ bool verify_function( llvm::Function &source_func, std::shared_ptr< llvm::LLVMCo
     if ( !tested_mod->getFunction( "main" ) )
     {
         auto type = llvm::FunctionType::get( llvm::Type::getInt32Ty( *ctx ), false );
-        auto m = llvm::cast< llvm::Function >( tested_mod->getOrInsertFunction( "main", type ) );
+        auto m = llvm::cast< llvm::Function >( tested_mod->getOrInsertFunction( "main", type ).getCallee() );
 
         auto entry = llvm::BasicBlock::Create( *ctx, "main.0", m );
         llvm::IRBuilder<> builder { entry };
@@ -393,7 +393,7 @@ llvm::Function *generate_test_wrapper( llvm::Function *fun )
     const auto type = llvm::FunctionType::get( llvm::Type::getVoidTy( ctx ), false );
 
     // Assume that the function has the correct signature, if it exists
-    auto wrapper = llvm::cast< llvm::Function >( mod->getOrInsertFunction( name, type ) );
+    auto wrapper = llvm::cast< llvm::Function >( mod->getOrInsertFunction( name, type ).getCallee() );
 
     auto entry = llvm::BasicBlock::Create( ctx, name + ".0", wrapper );
     llvm::IRBuilder<> builder { entry };

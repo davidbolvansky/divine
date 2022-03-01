@@ -98,7 +98,7 @@ void makeExceptionsVisible( EhInfo ehi, llvm::Function &fn, ShouldTransformCall 
             auto *invokeOkBB = bb->splitBasicBlock( split, "lart.cleanup.invoke.ok" );
 
             std::vector< llvm::Value * > args( inst->arg_operands().begin(), inst->arg_operands().end() );
-            auto *invoke = llvm::InvokeInst::Create( inst->getCalledValue(), invokeOkBB, cleanupBB, args );
+            auto *invoke = llvm::InvokeInst::Create( inst->getFunctionType(), inst->getCalledOperand(), invokeOkBB, cleanupBB, args );
             llvm::ReplaceInstWithInst( inst, invoke );
             bb->rbegin()->eraseFromParent(); // br added by splitBasicBlock
         }

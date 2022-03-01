@@ -16,7 +16,7 @@ namespace lart::abstract::meta {
                        .freeze();
 
             ASSERT( anno && "Call does not have annotation." );
-            return brick::llvm::Annotation{ anno->getAsCString() };
+            return brick::llvm::Annotation{ anno->getAsCString().str() };
         }
 
         auto functions_with_prefix( llvm::StringRef pref, llvm::Module & m ) noexcept {

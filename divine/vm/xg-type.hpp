@@ -61,9 +61,10 @@ struct Types
             t.type = _VM_Type::Struct;
             items = t.items = T->getStructNumElements();
             _types.resize( _types.size() + items );
-        }
-        else if ( auto ST = llvm::dyn_cast< llvm::SequentialType >( T ) )
-            seqt( ST );
+        } else if ( auto AT = llvm::dyn_cast< llvm::ArrayType >( T ) )
+            seqt( AT );
+        else if ( auto VT = llvm::dyn_cast< llvm::VectorType >( T ) )
+            seqt( VT );
         else if ( auto PT = llvm::dyn_cast< llvm::PointerType >( T ) )
             seqt( PT );
         else

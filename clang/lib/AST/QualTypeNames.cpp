@@ -1,11 +1,8 @@
 //===------- QualTypeNames.cpp - Generate Complete QualType Names ---------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-//===----------------------------------------------------------------------===//
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -195,7 +192,7 @@ static NestedNameSpecifier *createOuterNNS(const ASTContext &Ctx, const Decl *D,
       // Ignore inline namespace;
       NS = dyn_cast<NamespaceDecl>(NS->getDeclContext());
     }
-    if (NS->getDeclName()) {
+    if (NS && NS->getDeclName()) {
       return createNestedNameSpecifier(Ctx, NS, WithGlobalNsPrefix);
     }
     return nullptr;  // no starting '::', no anonymous
@@ -359,11 +356,19 @@ NestedNameSpecifier *createNestedNameSpecifier(const ASTContext &Ctx,
                                                const TypeDecl *TD,
                                                bool FullyQualify,
                                                bool WithGlobalNsPrefix) {
+  const Type *TypePtr = TD->getTypeForDecl();
+  if (isa<const TemplateSpecializationType>(TypePtr) ||
+      isa<const RecordType>(TypePtr)) {
+    // We are asked to fully qualify and we have a Record Type (which
+    // may point to a template specialization) or Template
+    // Specialization Type. We need to fully qualify their arguments.
+
+    TypePtr = getFullyQualifiedTemplateType(Ctx, TypePtr, WithGlobalNsPrefix);
+  }
+
   return NestedNameSpecifier::Create(
-      Ctx,
-      createOuterNNS(Ctx, TD, FullyQualify, WithGlobalNsPrefix),
-      false /*No TemplateKeyword*/,
-      TD->getTypeForDecl());
+      Ctx, createOuterNNS(Ctx, TD, FullyQualify, WithGlobalNsPrefix),
+      false /*No TemplateKeyword*/, TypePtr);
 }
 
 /// Return the fully qualified type, including fully-qualified
@@ -377,6 +382,19 @@ QualType getFullyQualifiedType(QualType QT, const ASTContext &Ctx,
     Qualifiers Quals = QT.getQualifiers();
     QT = getFullyQualifiedType(QT->getPointeeType(), Ctx, WithGlobalNsPrefix);
     QT = Ctx.getPointerType(QT);
+    // Add back the qualifiers.
+    QT = Ctx.getQualifiedType(QT, Quals);
+    return QT;
+  }
+
+  if (auto *MPT = dyn_cast<MemberPointerType>(QT.getTypePtr())) {
+    // Get the qualifiers.
+    Qualifiers Quals = QT.getQualifiers();
+    // Fully qualify the pointee and class types.
+    QT = getFullyQualifiedType(QT->getPointeeType(), Ctx, WithGlobalNsPrefix);
+    QualType Class = getFullyQualifiedType(QualType(MPT->getClass(), 0), Ctx,
+                                           WithGlobalNsPrefix);
+    QT = Ctx.getMemberPointerType(QT, Class.getTypePtr());
     // Add back the qualifiers.
     QT = Ctx.getQualifiedType(QT, Quals);
     return QT;

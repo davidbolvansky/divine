@@ -25,9 +25,10 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/ADT/IntrusiveRefCntPtr.h>
 #include <clang/Basic/DiagnosticOptions.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
-#include <clang/Tooling/Tooling.h> // ClangTool
+// #include <clang/Tooling/Tooling.h> // ClangTool
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#include <llvm/Support/VirtualFileSystem.h>
 DIVINE_UNRELAX_WARNINGS
 
 #include <brick-except>
@@ -109,10 +110,10 @@ namespace divine::cc
         template< typename CodeGenAction >
         std::unique_ptr< CodeGenAction > cc1( std::string filename,
                                     FileType type, std::vector< std::string > args,
-                                    llvm::IntrusiveRefCntPtr< clang::vfs::FileSystem > vfs = nullptr );
+                                    llvm::IntrusiveRefCntPtr< llvm::vfs::FileSystem > vfs = nullptr );
 
         llvm::IntrusiveRefCntPtr< VFS > divineVFS;
-        llvm::IntrusiveRefCntPtr< clang::vfs::OverlayFileSystem > overlayFS;
+        llvm::IntrusiveRefCntPtr< llvm::vfs::OverlayFileSystem > overlayFS;
         std::shared_ptr< llvm::LLVMContext > ctx;
     };
 }

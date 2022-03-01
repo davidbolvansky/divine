@@ -70,7 +70,7 @@ function( test_bricks dir )
   add_definitions( ${ARGN} )
   file( GLOB SRC "${dir}/brick-*[a-z0-9]" )
   bricks_unittest( test-bricks ${SRC} )
-  target_link_libraries( test-bricks pthread ${BRICK_USED_LLVM_LIBS} )
+  target_link_libraries( test-bricks pthread atomic ${BRICK_USED_LLVM_LIBS} )
 endfunction()
 
 function( benchmark_bricks dir )

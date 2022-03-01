@@ -13,7 +13,7 @@ namespace lart::abstract {
     template< typename Value >
     void annotation_to_transform_metadata( llvm::StringRef ns, llvm::Module &m ) {
         auto &ctx = m.getContext();
-        brick::llvm::enumerateAnnosInNs< Value >( ns, m, [&] ( auto val, auto anno ) {
+        brick::llvm::enumerateAnnosInNs< Value >( ns.str(), m, [&] ( auto val, auto anno ) {
             auto name = ns.str() + "." + anno.toString();
             val->setMetadata( name, meta::tuple::empty( ctx ) );
         });
@@ -22,7 +22,7 @@ namespace lart::abstract {
     template< typename Value >
     void annotation_to_domain_metadata( llvm::StringRef ns, llvm::Module &m ) {
         auto &ctx = m.getContext();
-        brick::llvm::enumerateAnnosInNs< Value >( ns, m, [&] ( auto val, auto anno ) {
+        brick::llvm::enumerateAnnosInNs< Value >( ns.str(), m, [&] ( auto val, auto anno ) {
             auto meta = meta::create( ctx, anno.name() );
             val->setMetadata( ns, meta::tuple::create( ctx, { meta } ) );
         });

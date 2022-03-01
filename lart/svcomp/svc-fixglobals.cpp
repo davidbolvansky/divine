@@ -57,7 +57,7 @@ struct FixGlobals {
 
         auto *init = llvm::cast< llvm::Function >(
                         m.getOrInsertFunction( "__lart_svc_fixglobals_init",
-                            llvm::FunctionType::get( llvm::Type::getVoidTy( ctx ), false ) ) );
+                            llvm::FunctionType::get( llvm::Type::getVoidTy( ctx ), false ) ).getCallee() );
         auto *initBB = llvm::BasicBlock::Create( ctx, "", init );
         llvm::IRBuilder<> irb( initBB, initBB->getFirstInsertionPt() );
 

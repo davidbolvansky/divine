@@ -1,9 +1,8 @@
 //===-------- MipsELFStreamer.cpp - ELF Object Output ---------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,6 +14,7 @@
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSymbolELF.h"
@@ -33,9 +33,9 @@ MipsELFStreamer::MipsELFStreamer(MCContext &Context,
       std::unique_ptr<MipsRegInfoRecord>(RegInfoRecord));
 }
 
-void MipsELFStreamer::EmitInstruction(const MCInst &Inst,
-                                      const MCSubtargetInfo &STI, bool) {
-  MCELFStreamer::EmitInstruction(Inst, STI);
+void MipsELFStreamer::emitInstruction(const MCInst &Inst,
+                                      const MCSubtargetInfo &STI) {
+  MCELFStreamer::emitInstruction(Inst, STI);
 
   MCContext &Context = getContext();
   const MCRegisterInfo *MCRegInfo = Context.getRegisterInfo();
@@ -51,6 +51,22 @@ void MipsELFStreamer::EmitInstruction(const MCInst &Inst,
   }
 
   createPendingLabelRelocs();
+}
+
+void MipsELFStreamer::emitCFIStartProcImpl(MCDwarfFrameInfo &Frame) {
+  Frame.Begin = getContext().createTempSymbol();
+  MCELFStreamer::emitLabel(Frame.Begin);
+}
+
+MCSymbol *MipsELFStreamer::emitCFILabel() {
+  MCSymbol *Label = getContext().createTempSymbol("cfi", true);
+  MCELFStreamer::emitLabel(Label);
+  return Label;
+}
+
+void MipsELFStreamer::emitCFIEndProcImpl(MCDwarfFrameInfo &Frame) {
+  Frame.End = getContext().createTempSymbol();
+  MCELFStreamer::emitLabel(Frame.End);
 }
 
 void MipsELFStreamer::createPendingLabelRelocs() {
@@ -69,8 +85,8 @@ void MipsELFStreamer::createPendingLabelRelocs() {
   Labels.clear();
 }
 
-void MipsELFStreamer::EmitLabel(MCSymbol *Symbol, SMLoc Loc) {
-  MCELFStreamer::EmitLabel(Symbol);
+void MipsELFStreamer::emitLabel(MCSymbol *Symbol, SMLoc Loc) {
+  MCELFStreamer::emitLabel(Symbol);
   Labels.push_back(Symbol);
 }
 
@@ -80,14 +96,14 @@ void MipsELFStreamer::SwitchSection(MCSection *Section,
   Labels.clear();
 }
 
-void MipsELFStreamer::EmitValueImpl(const MCExpr *Value, unsigned Size,
+void MipsELFStreamer::emitValueImpl(const MCExpr *Value, unsigned Size,
                                     SMLoc Loc) {
-  MCELFStreamer::EmitValueImpl(Value, Size, Loc);
+  MCELFStreamer::emitValueImpl(Value, Size, Loc);
   Labels.clear();
 }
 
-void MipsELFStreamer::EmitIntValue(uint64_t Value, unsigned Size) {
-  MCELFStreamer::EmitIntValue(Value, Size);
+void MipsELFStreamer::emitIntValue(uint64_t Value, unsigned Size) {
+  MCELFStreamer::emitIntValue(Value, Size);
   Labels.clear();
 }
 

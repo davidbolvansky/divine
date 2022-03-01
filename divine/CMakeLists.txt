@@ -66,8 +66,8 @@ bricks_unittest( test-divine ${HPP_ra} ${HPP_ss} ${HPP_mem} ${HPP_vm} ${HPP_mc} 
 llvm_map_components_to_libnames( CC_TGTS ${LLVM_TARGETS_TO_BUILD} )
 target_link_libraries( divine-cc LLVMCore LLVMSupport LLVMMC LLVMIRReader
                                  LLVMBitReader LLVMBitWriter LLVMLinker
-                                 LLVMObject LLVMTransformUtils ${CC_TGTS}
-                                 clang clangBasic clangCodeGen lldELF )
+                                 LLVMObject LLVMTarget LLVMTransformUtils ${CC_TGTS}
+                                 clangBasic clangCodeGen lldELF )
 target_link_libraries( divine-smt ${Z3_LIBRARIES} ${STP_LIBRARIES} )
 target_link_libraries( divine-dbg divine-vm )
 target_link_libraries( divine-mc divine-vm divine-dbg divine-smt divine-rt divine-cc # FIXME divine-cc
@@ -80,7 +80,7 @@ if ( OPT_SQL )
     target_link_libraries( divine-ui nanodbc )
 endif()
 
-target_link_libraries( test-divine divine-cc divine-vm divine-ltl divine-dbg divine-mc divine-ra )
+target_link_libraries( test-divine divine-cc divine-vm divine-ltl divine-dbg divine-mc divine-ra atomic )
 
 if( WIN32 )
   target_link_libraries( libdivine psapi )

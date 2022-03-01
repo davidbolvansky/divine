@@ -1,9 +1,8 @@
 //===-- DwarfException.h - Dwarf Exception Framework -----------*- C++ -*--===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -45,9 +44,6 @@ class LLVM_LIBRARY_VISIBILITY DwarfCFIException : public DwarfCFIExceptionBase {
   /// Per-function flag to indicate if .cfi_lsda should be emitted.
   bool shouldEmitLSDA;
 
-  /// Per-function flag to indicate if frame moves info should be emitted.
-  bool shouldEmitMoves;
-
 public:
   //===--------------------------------------------------------------------===//
   // Main entry points.
@@ -67,6 +63,9 @@ public:
 
   void beginFragment(const MachineBasicBlock *MBB,
                      ExceptionSymbolProvider ESP) override;
+
+  void beginBasicBlock(const MachineBasicBlock &MBB) override;
+  void endBasicBlock(const MachineBasicBlock &MBB) override;
 };
 
 class LLVM_LIBRARY_VISIBILITY ARMException : public DwarfCFIExceptionBase {
@@ -89,6 +88,20 @@ public:
 
   /// Gather and emit post-function exception information.
   void endFunction(const MachineFunction *) override;
+};
+
+class LLVM_LIBRARY_VISIBILITY AIXException : public DwarfCFIExceptionBase {
+  /// This is AIX's compat unwind section, which unwinder would use
+  /// to find the location of LSDA area and personality rountine.
+  void emitExceptionInfoTable(const MCSymbol *LSDA, const MCSymbol *PerSym);
+
+public:
+  AIXException(AsmPrinter *A);
+
+  void endModule() override {}
+  void beginFunction(const MachineFunction *MF) override {}
+
+  void endFunction(const MachineFunction *MF) override;
 };
 } // End of namespace llvm
 

@@ -1,9 +1,8 @@
 //===-- AMDGPUTargetMachine.h - AMDGPU TargetMachine Interface --*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -15,15 +14,9 @@
 #ifndef LLVM_LIB_TARGET_AMDGPU_AMDGPUTARGETMACHINE_H
 #define LLVM_LIB_TARGET_AMDGPU_AMDGPUTARGETMACHINE_H
 
-#include "AMDGPUIntrinsicInfo.h"
-#include "AMDGPUSubtarget.h"
-#include "llvm/ADT/Optional.h"
-#include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/StringRef.h"
-#include "llvm/Analysis/TargetTransformInfo.h"
-#include "llvm/Support/CodeGen.h"
+#include "GCNSubtarget.h"
+#include "R600Subtarget.h"
 #include "llvm/Target/TargetMachine.h"
-#include <memory>
 
 namespace llvm {
 
@@ -34,7 +27,6 @@ namespace llvm {
 class AMDGPUTargetMachine : public LLVMTargetMachine {
 protected:
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
-  AMDGPUAS AS;
 
   StringRef getGPUName(const Function &F) const;
   StringRef getFeatureString(const Function &F) const;
@@ -42,6 +34,8 @@ protected:
 public:
   static bool EnableLateStructurizeCFG;
   static bool EnableFunctionCalls;
+  static bool EnableFixedFunctionABI;
+  static bool EnableLowerModuleLDS;
 
   AMDGPUTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                       StringRef FS, TargetOptions Options,
@@ -55,17 +49,18 @@ public:
   TargetLoweringObjectFile *getObjFileLowering() const override {
     return TLOF.get();
   }
-  AMDGPUAS getAMDGPUAS() const {
-    return AS;
-  }
 
   void adjustPassManager(PassManagerBuilder &) override;
+
+  void registerPassBuilderCallbacks(PassBuilder &PB) override;
+  void registerDefaultAliasAnalyses(AAManager &) override;
+
   /// Get the integer value of a null pointer in the given address space.
-  uint64_t getNullPointerValue(unsigned AddrSpace) const {
-    if (AddrSpace == AS.LOCAL_ADDRESS || AddrSpace == AS.REGION_ADDRESS)
-      return -1;
-    return 0;
-  }
+  static int64_t getNullPointerValue(unsigned AddrSpace);
+
+  bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const override;
+
+  unsigned getAssumedAddrSpace(const Value *V) const override;
 };
 
 //===----------------------------------------------------------------------===//
@@ -99,7 +94,6 @@ public:
 
 class GCNTargetMachine final : public AMDGPUTargetMachine {
 private:
-  AMDGPUIntrinsicInfo IntrinsicInfo;
   mutable StringMap<std::unique_ptr<GCNSubtarget>> SubtargetMap;
 
 public:
@@ -114,13 +108,17 @@ public:
 
   TargetTransformInfo getTargetTransformInfo(const Function &F) override;
 
-  const AMDGPUIntrinsicInfo *getIntrinsicInfo() const override {
-    return &IntrinsicInfo;
-  }
-
   bool useIPRA() const override {
     return true;
   }
+
+  yaml::MachineFunctionInfo *createDefaultFuncInfoYAML() const override;
+  yaml::MachineFunctionInfo *
+  convertFuncInfoToYAML(const MachineFunction &MF) const override;
+  bool parseMachineFunctionInfo(const yaml::MachineFunctionInfo &,
+                                PerFunctionMIParsingState &PFS,
+                                SMDiagnostic &Error,
+                                SMRange &SourceRange) const override;
 };
 
 } // end namespace llvm

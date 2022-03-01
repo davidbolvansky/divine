@@ -1,9 +1,8 @@
 //===-- AVRISelDAGToDAG.cpp - A dag to dag inst selector for AVR ----------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -243,16 +242,13 @@ bool AVRDAGToDAGISel::SelectInlineAsmMemoryOperand(const SDValue &Op,
     ConstantSDNode *ImmNode = dyn_cast<ConstantSDNode>(ImmOp);
 
     unsigned Reg;
-    bool CanHandleRegImmOpt = true;
-
-    CanHandleRegImmOpt &= ImmNode != 0;
-    CanHandleRegImmOpt &= ImmNode->getAPIntValue().getZExtValue() < 64;
+    bool CanHandleRegImmOpt = ImmNode && ImmNode->getAPIntValue().ult(64);
 
     if (CopyFromRegOp->getOpcode() == ISD::CopyFromReg) {
       RegisterSDNode *RegNode =
           cast<RegisterSDNode>(CopyFromRegOp->getOperand(1));
       Reg = RegNode->getReg();
-      CanHandleRegImmOpt &= (TargetRegisterInfo::isVirtualRegister(Reg) ||
+      CanHandleRegImmOpt &= (Register::isVirtualRegister(Reg) ||
                              AVR::PTRDISPREGSRegClass.contains(Reg));
     } else {
       CanHandleRegImmOpt = false;
@@ -266,7 +262,7 @@ bool AVRDAGToDAGISel::SelectInlineAsmMemoryOperand(const SDValue &Op,
       if (RI.getRegClass(Reg) != &AVR::PTRDISPREGSRegClass) {
         SDLoc dl(CopyFromRegOp);
 
-        unsigned VReg = RI.createVirtualRegister(&AVR::PTRDISPREGSRegClass);
+        Register VReg = RI.createVirtualRegister(&AVR::PTRDISPREGSRegClass);
 
         SDValue CopyToReg =
             CurDAG->getCopyToReg(CopyFromRegOp, dl, VReg, CopyFromRegOp);
@@ -295,7 +291,7 @@ bool AVRDAGToDAGISel::SelectInlineAsmMemoryOperand(const SDValue &Op,
   // More generic case.
   // Create chain that puts Op into pointer register
   // and return that register.
-  unsigned VReg = RI.createVirtualRegister(&AVR::PTRDISPREGSRegClass);
+  Register VReg = RI.createVirtualRegister(&AVR::PTRDISPREGSRegClass);
 
   SDValue CopyToReg = CurDAG->getCopyToReg(Op, dl, VReg, Op);
   SDValue CopyFromReg =
@@ -350,9 +346,7 @@ template <> bool AVRDAGToDAGISel::select<ISD::STORE>(SDNode *N) {
   SDNode *ResNode = CurDAG->getMachineNode(Opc, DL, MVT::Other, Ops);
 
   // Transfer memory operands.
-  MachineSDNode::mmo_iterator MemOp = MF->allocateMemRefsArray(1);
-  MemOp[0] = ST->getMemOperand();
-  cast<MachineSDNode>(ResNode)->setMemRefs(MemOp, MemOp + 1);
+  CurDAG->setNodeMemRefs(cast<MachineSDNode>(ResNode), {ST->getMemOperand()});
 
   ReplaceUses(SDValue(N, 0), SDValue(ResNode, 0));
   CurDAG->RemoveDeadNode(N);
@@ -407,9 +401,7 @@ template <> bool AVRDAGToDAGISel::select<ISD::LOAD>(SDNode *N) {
   }
 
   // Transfer memory operands.
-  MachineSDNode::mmo_iterator MemOp = MF->allocateMemRefsArray(1);
-  MemOp[0] = LD->getMemOperand();
-  cast<MachineSDNode>(ResNode)->setMemRefs(MemOp, MemOp + 1);
+  CurDAG->setNodeMemRefs(cast<MachineSDNode>(ResNode), {LD->getMemOperand()});
 
   ReplaceUses(SDValue(N, 0), SDValue(ResNode, 0));
   ReplaceUses(SDValue(N, 1), SDValue(ResNode, 1));

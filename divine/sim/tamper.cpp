@@ -29,8 +29,7 @@ llvm::Value* CLI::find_tamperee( const DN &dn )
                 if ( llvm::isa< llvm::DbgDeclareInst >( inst ) ||
                      llvm::isa< llvm::DbgValueInst > ( inst ) )
                 {
-                    // llvm::DbgVariableIntrinsic in LLVM 9
-                    auto *di = llvm::cast< llvm::DbgInfoIntrinsic >( &inst );
+                    auto *di = llvm::cast< llvm::DbgVariableIntrinsic >( &inst );
                     auto *divar = di->getVariable();
 
                     if ( divar &&
@@ -39,7 +38,7 @@ llvm::Value* CLI::find_tamperee( const DN &dn )
                          divar->getFilename().equals( dn._di_var->getFilename() ) &&
                          divar->getDirectory().equals( dn._di_var->getDirectory() ) &&
                          divar->getName().equals( dn._di_var->getName() ) )
-                        return llvm::isa< llvm::DbgValueInst >( inst ) ? &inst : di->getVariableLocation();
+                        return llvm::isa< llvm::DbgValueInst >( inst ) ? &inst : di->getVariableLocationOp(0);
                 }
             }
         }
@@ -61,7 +60,7 @@ template< typename IRBuilder >
 void prepareDebugMetadata( IRBuilder & irb )
 {
     auto *discope = irb.GetInsertBlock()->getParent()->getSubprogram();
-    auto dl = llvm::DebugLoc::get( 0, 0, discope, nullptr );
+    auto dl = llvm::DebugLoc(  discope ).get();
     irb.SetCurrentDebugLocation( dl );
 }
 
@@ -156,7 +155,7 @@ void CLI::tamper( const command::tamper &cmd, DN &dn, llvm::AllocaInst *origin_a
                     // split the basic block and create branching: if the variable is fresh, lift the
                     // original value.
                     auto bb_upper = store->getParent();
-                    std::string bb_name = bb_upper->getName();
+                    std::string bb_name = bb_upper->getName().str();
                     auto bb_lower = bb_upper->splitBasicBlock( store, bb_name + ".cont" );
                     auto bb_lift = llvm::BasicBlock::Create( bb_lower->getContext(),
                             bb_name + ".lift." + varname, bb_lower->getParent(), bb_lower );
@@ -205,7 +204,7 @@ void CLI::tamper( const command::tamper &cmd, DN &dn, llvm::AllocaInst *origin_a
  * (or constant) until next llvm.dbg.value with nondet or lifted value */
 void CLI::tamper( const command::tamper &cmd, DN &dn, llvm::DbgValueInst *dvi )
 {
-    auto varname = dvi->getVariableLocation()->getName().str();
+    auto varname = dvi->getVariableLocationOp(0)->getName().str();
 
     llvm::IRBuilder<> irb( dvi->getFunction()->getEntryBlock().getFirstNonPHI() );
     llvm::Value *aval = nullptr;
@@ -220,13 +219,13 @@ void CLI::tamper( const command::tamper &cmd, DN &dn, llvm::DbgValueInst *dvi )
         if ( cmd.lift )
         {
             irb.SetInsertPoint( dvi );
-            aval = mkCallLift( irb, dn, dvi->getVariableLocation(), varname );
+            aval = mkCallLift( irb, dn, dvi->getVariableLocationOp(0), varname );
         }
         auto iit = dvi->getParent()->begin();
         while ( &*iit != dvi )
             ++iit;
-        replace_until_next_dvi( ++iit, dvi->getVariable(), dvi->getVariableLocation(), aval );
-        dvi->replaceUsesOfWith( dvi->getVariableLocation(), aval );
+        replace_until_next_dvi( ++iit, dvi->getVariable(), dvi->getVariableLocationOp(0), aval );
+        dvi->replaceUsesOfWith( dvi->getVariableLocationOp(0), aval );
     }
 }
 

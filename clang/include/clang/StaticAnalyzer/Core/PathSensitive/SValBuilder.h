@@ -1,9 +1,8 @@
 // SValBuilder.h - Construction of SVals from evaluating expressions -*- C++ -*-
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -73,13 +72,27 @@ protected:
   /// The width of the scalar type used for array indices.
   const unsigned ArrayIndexWidth;
 
-  virtual SVal evalCastFromNonLoc(NonLoc val, QualType castTy) = 0;
-  virtual SVal evalCastFromLoc(Loc val, QualType castTy) = 0;
-
-public:
-  // FIXME: Make these protected again once RegionStoreManager correctly
-  // handles loads from different bound value types.
-  virtual SVal dispatchCast(SVal val, QualType castTy) = 0;
+  SVal evalCastKind(UndefinedVal V, QualType CastTy, QualType OriginalTy);
+  SVal evalCastKind(UnknownVal V, QualType CastTy, QualType OriginalTy);
+  SVal evalCastKind(Loc V, QualType CastTy, QualType OriginalTy);
+  SVal evalCastKind(NonLoc V, QualType CastTy, QualType OriginalTy);
+  SVal evalCastSubKind(loc::ConcreteInt V, QualType CastTy,
+                       QualType OriginalTy);
+  SVal evalCastSubKind(loc::GotoLabel V, QualType CastTy, QualType OriginalTy);
+  SVal evalCastSubKind(loc::MemRegionVal V, QualType CastTy,
+                       QualType OriginalTy);
+  SVal evalCastSubKind(nonloc::CompoundVal V, QualType CastTy,
+                       QualType OriginalTy);
+  SVal evalCastSubKind(nonloc::ConcreteInt V, QualType CastTy,
+                       QualType OriginalTy);
+  SVal evalCastSubKind(nonloc::LazyCompoundVal V, QualType CastTy,
+                       QualType OriginalTy);
+  SVal evalCastSubKind(nonloc::LocAsInteger V, QualType CastTy,
+                       QualType OriginalTy);
+  SVal evalCastSubKind(nonloc::SymbolVal V, QualType CastTy,
+                       QualType OriginalTy);
+  SVal evalCastSubKind(nonloc::PointerToMember V, QualType CastTy,
+                       QualType OriginalTy);
 
 public:
   SValBuilder(llvm::BumpPtrAllocator &alloc, ASTContext &context,
@@ -103,7 +116,7 @@ public:
              Ty2->isIntegralOrEnumerationType()));
   }
 
-  SVal evalCast(SVal val, QualType castTy, QualType originalType);
+  SVal evalCast(SVal V, QualType CastTy, QualType OriginalTy);
 
   // Handles casts of type CK_IntegralCast.
   SVal evalIntegralCast(ProgramStateRef state, SVal val, QualType castTy,
@@ -139,8 +152,8 @@ public:
   virtual SVal simplifySVal(ProgramStateRef State, SVal Val) = 0;
 
   /// Constructs a symbolic expression for two non-location values.
-  SVal makeSymExprValNN(ProgramStateRef state, BinaryOperator::Opcode op,
-                      NonLoc lhs, NonLoc rhs, QualType resultTy);
+  SVal makeSymExprValNN(BinaryOperator::Opcode op,
+                        NonLoc lhs, NonLoc rhs, QualType resultTy);
 
   SVal evalBinOp(ProgramStateRef state, BinaryOperator::Opcode op,
                  SVal lhs, SVal rhs, QualType type);
@@ -225,6 +238,14 @@ public:
                                                 const LocationContext *LCtx,
                                                 unsigned Count);
 
+  /// Conjure a symbol representing heap allocated memory region.
+  ///
+  /// Note, now, the expression *doesn't* need to represent a location.
+  /// But the type need to!
+  DefinedOrUnknownSVal getConjuredHeapSymbolVal(const Expr *E,
+                                                const LocationContext *LCtx,
+                                                QualType type, unsigned Count);
+
   DefinedOrUnknownSVal getDerivedRegionValueSymbolVal(
       SymbolRef parentSymbol, const TypedValueRegion *region);
 
@@ -234,7 +255,7 @@ public:
                                    const LocationContext *LCtx,
                                    unsigned count);
 
-  DefinedSVal getMemberPointer(const DeclaratorDecl *DD);
+  DefinedSVal getMemberPointer(const NamedDecl *ND);
 
   DefinedSVal getFunctionPointer(const FunctionDecl *func);
 
@@ -366,6 +387,10 @@ public:
   Loc makeLoc(const llvm::APSInt& integer) {
     return loc::ConcreteInt(BasicVals.getValue(integer));
   }
+
+  /// Return MemRegionVal on success cast, otherwise return None.
+  Optional<loc::MemRegionVal> getCastedMemRegionVal(const MemRegion *region,
+                                                    QualType type);
 
   /// Make an SVal that represents the given symbol. This follows the convention
   /// of representing Loc-type symbols (symbolic pointers and references)

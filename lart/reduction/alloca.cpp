@@ -180,7 +180,7 @@ struct DeadAllocaZeoring {
         _mzeroPtrT = llvm::Type::getInt8PtrTy( ctx );
         _mzeroSiT = llvm::Type::getInt64Ty( ctx );
         auto mzerotype = llvm::FunctionType::get( llvm::Type::getVoidTy( ctx ), llvm::ArrayRef< llvm::Type * >( { _mzeroPtrT, _mzeroSiT } ), false );
-        auto mzero = llvm::cast< llvm::Function >( m.getOrInsertFunction( "lart.alloca.mzero", mzerotype ) );
+        auto mzero = llvm::cast< llvm::Function >( m.getOrInsertFunction( "lart.alloca.mzero", mzerotype ).getCallee() );
         if ( !mzero->empty() )
             return mzero; // already present
 

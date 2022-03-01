@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include <dios/sys/stdlibwrap.hpp>
+
 namespace __dios
 {
 

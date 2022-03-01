@@ -161,7 +161,7 @@ struct FixLLVMIt : It {
     FixLLVMIt( It &&it ) : It( std::move( it ) ) { }
 };
 
-using LLVMBBSuccIt = llvm::TerminatorInst::SuccIterator< llvm::TerminatorInst *, llvm::BasicBlock >;
+using LLVMBBSuccIt = llvm::SuccIterator<llvm::Instruction, llvm::BasicBlock>;
 template<>
 struct FixLLVMIt< LLVMBBSuccIt > : LLVMBBSuccIt
 {
@@ -237,8 +237,9 @@ static inline llvm::Function* get_or_insert_function( llvm::Module *m,
                                                llvm::FunctionType *fty,
                                                llvm::StringRef name )
 {
-    auto fn = llvm::cast< llvm::Function >( m->getOrInsertFunction( name, fty ) );
-    fn->addFnAttr( llvm::Attribute::NoUnwind );
+    auto *fn = llvm::dyn_cast< llvm::Function >( m->getOrInsertFunction( name, fty ).getCallee() );
+    if (fn)
+        fn->addFnAttr( llvm::Attribute::NoUnwind );
     return fn;
 }
 
@@ -610,7 +611,7 @@ inline util::StableSet< BBEdge > getBackEdges( llvm::Function &fn ) {
             auto *dst = *stack.back();
             if ( inStack.count( dst ) )
                 backedges.insert( BBEdge{ stack.back().getSource(),
-                                          stack.back().getSuccessorIndex() } );
+                                          static_cast<unsigned int>( stack.back().getSuccessorIndex() ) } );
             ++stack.back();
             if ( seen.insert( dst ).second ) {
                 stack.emplace_back( succ_begin( dst ) );
@@ -621,12 +622,12 @@ inline util::StableSet< BBEdge > getBackEdges( llvm::Function &fn ) {
     return backedges;
 }
 
-inline llvm::Value *getCalledValue( llvm::CallInst *call ) { return call->getCalledValue(); }
-inline llvm::Value *getCalledValue( llvm::InvokeInst *call ) { return call->getCalledValue(); }
+inline llvm::Value *getCalledOperand( llvm::CallInst *call ) { return call->getCalledOperand(); }
+inline llvm::Value *getCalledOperand( llvm::InvokeInst *call ) { return call->getCalledOperand(); }
 
 template< typename C >
 llvm::Function *getCalledFunction( C *call ) {
-    llvm::Value *calledVal = getCalledValue( call );
+    llvm::Value *calledVal = getCalledOperand( call );
 
     llvm::Function *called = nullptr;
     do {
@@ -813,7 +814,7 @@ inline void cloneFunctionInto( llvm::Function * to,
 {
     remapArgs( from, to, vmap );
     llvm::SmallVector< llvm::ReturnInst *, 8 > returns;
-    llvm::CloneFunctionInto( to, from, vmap, true, returns, "", nullptr );
+    llvm::CloneFunctionInto( to, from, vmap, llvm::CloneFunctionChangeType::GlobalChanges, returns, "", nullptr );
 }
 
 inline llvm::Function * cloneFunction( llvm::Function *fn, llvm::FunctionType *fty )
@@ -945,11 +946,12 @@ inline llvm::Function *cloneFunctionRecursively( llvm::Function *fn )
 inline void inlineIntoCallers( llvm::Function *fn ) {
     std::vector< llvm::Value * > users{ fn->user_begin(), fn->user_end() };
     for ( auto *u : users ) {
-        llvm::CallSite cs{ u };
-        if ( !cs )
+        auto *cb = llvm::dyn_cast< llvm::CallBase >( u );
+        if ( !cb )
             continue;
+        
         llvm::InlineFunctionInfo ifi;
-        llvm::InlineFunction( cs, ifi );
+        llvm::InlineFunction( *cb, ifi );
     }
 }
 

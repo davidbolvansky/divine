@@ -1,9 +1,8 @@
 //===- LiveInterval.cpp - Live Interval Representation --------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -297,9 +296,7 @@ private:
 
   iterator find(SlotIndex Pos) { return LR->find(Pos); }
 
-  iterator findInsertPos(Segment S) {
-    return std::upper_bound(LR->begin(), LR->end(), S.start);
-  }
+  iterator findInsertPos(Segment S) { return llvm::upper_bound(*LR, S.start); }
 };
 
 //===----------------------------------------------------------------------===//
@@ -490,7 +487,7 @@ bool LiveRange::overlaps(const LiveRange &Other, const CoalescerPair &CP,
 /// by [Start, End).
 bool LiveRange::overlaps(SlotIndex Start, SlotIndex End) const {
   assert(Start < End && "Invalid range");
-  const_iterator I = std::lower_bound(begin(), end(), End);
+  const_iterator I = lower_bound(*this, End);
   return I != begin() && (--I)->end > Start;
 }
 
@@ -880,8 +877,61 @@ void LiveInterval::clearSubRanges() {
   SubRanges = nullptr;
 }
 
-void LiveInterval::refineSubRanges(BumpPtrAllocator &Allocator,
-    LaneBitmask LaneMask, std::function<void(LiveInterval::SubRange&)> Apply) {
+/// For each VNI in \p SR, check whether or not that value defines part
+/// of the mask describe by \p LaneMask and if not, remove that value
+/// from \p SR.
+static void stripValuesNotDefiningMask(unsigned Reg, LiveInterval::SubRange &SR,
+                                       LaneBitmask LaneMask,
+                                       const SlotIndexes &Indexes,
+                                       const TargetRegisterInfo &TRI,
+                                       unsigned ComposeSubRegIdx) {
+  // Phys reg should not be tracked at subreg level.
+  // Same for noreg (Reg == 0).
+  if (!Register::isVirtualRegister(Reg) || !Reg)
+    return;
+  // Remove the values that don't define those lanes.
+  SmallVector<VNInfo *, 8> ToBeRemoved;
+  for (VNInfo *VNI : SR.valnos) {
+    if (VNI->isUnused())
+      continue;
+    // PHI definitions don't have MI attached, so there is nothing
+    // we can use to strip the VNI.
+    if (VNI->isPHIDef())
+      continue;
+    const MachineInstr *MI = Indexes.getInstructionFromIndex(VNI->def);
+    assert(MI && "Cannot find the definition of a value");
+    bool hasDef = false;
+    for (ConstMIBundleOperands MOI(*MI); MOI.isValid(); ++MOI) {
+      if (!MOI->isReg() || !MOI->isDef())
+        continue;
+      if (MOI->getReg() != Reg)
+        continue;
+      LaneBitmask OrigMask = TRI.getSubRegIndexLaneMask(MOI->getSubReg());
+      LaneBitmask ExpectedDefMask =
+          ComposeSubRegIdx
+              ? TRI.composeSubRegIndexLaneMask(ComposeSubRegIdx, OrigMask)
+              : OrigMask;
+      if ((ExpectedDefMask & LaneMask).none())
+        continue;
+      hasDef = true;
+      break;
+    }
+
+    if (!hasDef)
+      ToBeRemoved.push_back(VNI);
+  }
+  for (VNInfo *VNI : ToBeRemoved)
+    SR.removeValNo(VNI);
+
+  // If the subrange is empty at this point, the MIR is invalid. Do not assert
+  // and let the verifier catch this case.
+}
+
+void LiveInterval::refineSubRanges(
+    BumpPtrAllocator &Allocator, LaneBitmask LaneMask,
+    std::function<void(LiveInterval::SubRange &)> Apply,
+    const SlotIndexes &Indexes, const TargetRegisterInfo &TRI,
+    unsigned ComposeSubRegIdx) {
   LaneBitmask ToApply = LaneMask;
   for (SubRange &SR : subranges()) {
     LaneBitmask SRMask = SR.LaneMask;
@@ -899,6 +949,12 @@ void LiveInterval::refineSubRanges(BumpPtrAllocator &Allocator,
       SR.LaneMask = SRMask & ~Matching;
       // Create a new subrange for the matching part
       MatchingRange = createSubRangeFrom(Allocator, Matching, SR);
+      // Now that the subrange is split in half, make sure we
+      // only keep in the subranges the VNIs that touch the related half.
+      stripValuesNotDefiningMask(reg(), *MatchingRange, Matching, Indexes, TRI,
+                                 ComposeSubRegIdx);
+      stripValuesNotDefiningMask(reg(), SR, SR.LaneMask, Indexes, TRI,
+                                 ComposeSubRegIdx);
     }
     Apply(*MatchingRange);
     ToApply &= ~Matching;
@@ -921,11 +977,11 @@ void LiveInterval::computeSubRangeUndefs(SmallVectorImpl<SlotIndex> &Undefs,
                                          LaneBitmask LaneMask,
                                          const MachineRegisterInfo &MRI,
                                          const SlotIndexes &Indexes) const {
-  assert(TargetRegisterInfo::isVirtualRegister(reg));
-  LaneBitmask VRegMask = MRI.getMaxLaneMaskForVReg(reg);
+  assert(Register::isVirtualRegister(reg()));
+  LaneBitmask VRegMask = MRI.getMaxLaneMaskForVReg(reg());
   assert((VRegMask & LaneMask).any());
   const TargetRegisterInfo &TRI = *MRI.getTargetRegisterInfo();
-  for (const MachineOperand &MO : MRI.def_operands(reg)) {
+  for (const MachineOperand &MO : MRI.def_operands(reg())) {
     if (!MO.isUndef())
       continue;
     unsigned SubReg = MO.getSubReg();
@@ -987,12 +1043,12 @@ void LiveInterval::SubRange::print(raw_ostream &OS) const {
 }
 
 void LiveInterval::print(raw_ostream &OS) const {
-  OS << printReg(reg) << ' ';
+  OS << printReg(reg()) << ' ';
   super::print(OS);
   // Print subranges
   for (const SubRange &SR : subranges())
     OS << SR;
-  OS << " weight:" << weight;
+  OS << " weight:" << Weight;
 }
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
@@ -1031,7 +1087,7 @@ void LiveInterval::verify(const MachineRegisterInfo *MRI) const {
 
   // Make sure SubRanges are fine and LaneMasks are disjunct.
   LaneBitmask Mask;
-  LaneBitmask MaxMask = MRI != nullptr ? MRI->getMaxLaneMaskForVReg(reg)
+  LaneBitmask MaxMask = MRI != nullptr ? MRI->getMaxLaneMaskForVReg(reg())
                                        : LaneBitmask::getAll();
   for (const SubRange &SR : subranges()) {
     // Subrange lanemask should be disjunct to any previous subrange masks.
@@ -1280,9 +1336,8 @@ unsigned ConnectedVNInfoEqClasses::Classify(const LiveRange &LR) {
       const MachineBasicBlock *MBB = LIS.getMBBFromIndex(VNI->def);
       assert(MBB && "Phi-def has no defining MBB");
       // Connect to values live out of predecessors.
-      for (MachineBasicBlock::const_pred_iterator PI = MBB->pred_begin(),
-           PE = MBB->pred_end(); PI != PE; ++PI)
-        if (const VNInfo *PVNI = LR.getVNInfoBefore(LIS.getMBBEndIdx(*PI)))
+      for (MachineBasicBlock *Pred : MBB->predecessors())
+        if (const VNInfo *PVNI = LR.getVNInfoBefore(LIS.getMBBEndIdx(Pred)))
           EqClass.join(VNI->id, PVNI->id);
     } else {
       // Normal value defined by an instruction. Check for two-addr redef.
@@ -1305,28 +1360,26 @@ unsigned ConnectedVNInfoEqClasses::Classify(const LiveRange &LR) {
 void ConnectedVNInfoEqClasses::Distribute(LiveInterval &LI, LiveInterval *LIV[],
                                           MachineRegisterInfo &MRI) {
   // Rewrite instructions.
-  for (MachineRegisterInfo::reg_iterator RI = MRI.reg_begin(LI.reg),
-       RE = MRI.reg_end(); RI != RE;) {
-    MachineOperand &MO = *RI;
-    MachineInstr *MI = RI->getParent();
-    ++RI;
-    // DBG_VALUE instructions don't have slot indexes, so get the index of the
-    // instruction before them.
-    // Normally, DBG_VALUE instructions are removed before this function is
-    // called, but it is not a requirement.
-    SlotIndex Idx;
-    if (MI->isDebugValue())
-      Idx = LIS.getSlotIndexes()->getIndexBefore(*MI);
-    else
-      Idx = LIS.getInstructionIndex(*MI);
-    LiveQueryResult LRQ = LI.Query(Idx);
-    const VNInfo *VNI = MO.readsReg() ? LRQ.valueIn() : LRQ.valueDefined();
+  for (MachineOperand &MO :
+       llvm::make_early_inc_range(MRI.reg_operands(LI.reg()))) {
+    MachineInstr *MI = MO.getParent();
+    const VNInfo *VNI;
+    if (MI->isDebugValue()) {
+      // DBG_VALUE instructions don't have slot indexes, so get the index of
+      // the instruction before them. The value is defined there too.
+      SlotIndex Idx = LIS.getSlotIndexes()->getIndexBefore(*MI);
+      VNI = LI.Query(Idx).valueOut();
+    } else {
+      SlotIndex Idx = LIS.getInstructionIndex(*MI);
+      LiveQueryResult LRQ = LI.Query(Idx);
+      VNI = MO.readsReg() ? LRQ.valueIn() : LRQ.valueDefined();
+    }
     // In the case of an <undef> use that isn't tied to any def, VNI will be
     // NULL. If the use is tied to a def, VNI will be the defined value.
     if (!VNI)
       continue;
     if (unsigned EqClass = getEqClass(VNI))
-      MO.setReg(LIV[EqClass-1]->reg);
+      MO.setReg(LIV[EqClass - 1]->reg());
   }
 
   // Distribute subregister liveranges.

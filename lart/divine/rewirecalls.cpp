@@ -27,7 +27,7 @@ namespace lart::divine {
 template< typename CallType >
 std::vector< llvm::Value *> get_argument_list( CallType *inst )
 {
-    std::vector< llvm::Value *> new_args{ inst->getCalledValue() };
+    std::vector< llvm::Value *> new_args{ inst->getCalledOperand() };
     new_args.insert( new_args.end(), inst->arg_begin(), inst->arg_end() );
     return new_args;
 }
@@ -176,7 +176,7 @@ void rewire_calls_t::init()
     auto calls = call_types_t< llvm::CallInst, llvm::InvokeInst >( _module, is_indirect_call );
 
     auto wrap = [&]( auto &c ) {
-        auto wrapper = this->_wrap( c->getCalledValue()->getType() );
+        auto wrapper = this->_wrap( c->getCalledOperand()->getType() );
         _box_to_original_fn.insert( { wrapper, c->getFunction() } );
         create_call( c, wrapper );
     };

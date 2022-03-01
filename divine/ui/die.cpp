@@ -83,13 +83,6 @@ namespace divine::ui
             std::cerr << e.what() << std::endl;
             std::abort();
         }
-#if OPT_Z3
-        catch ( z3::exception &e )
-        {
-            std::cerr << "E: " << e.msg() << std::endl;
-            std::abort();
-        }
-#endif
         catch ( ... ) {
             std::cerr << "E: unknown exception" << std::endl;
             std::abort();

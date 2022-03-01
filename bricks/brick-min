@@ -45,7 +45,7 @@ namespace brq
      * friend-style definitions):
      *
      * template< typename stream >
-     * auto operator<<( stream &o, my_type t ) -> decltype( o << "" )
+     * auto operator<<( stream &o, my_type t ) -> decltype( o << std::string() )
      * {
      *     // ...
      * }

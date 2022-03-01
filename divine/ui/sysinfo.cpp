@@ -71,7 +71,8 @@ static MaybeStr matchLine( std::string_view file, std::regex &r, int matchIndex 
 {
     std::string line;
     std::smatch match;
-    std::ifstream f( file );
+    std::string cFile (file);
+    std::ifstream f( file.data() );
     while ( !f.eof() )
     {
         std::getline( f, line );

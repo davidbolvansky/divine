@@ -190,6 +190,11 @@ namespace brq
 
         struct iterator
         {
+            using value_type = generator::value_type;
+            using difference_type = ssize_t;
+            using pointer = value_type *;
+            using reference = value_type &;
+            using iterator_category = std::input_iterator_tag;
             gen_t _gen;
             state_t _state;
 

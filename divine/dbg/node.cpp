@@ -95,9 +95,9 @@ llvm::DIType *Node< Prog, Heap >::di_base( llvm::DIType *t )
     if ( !t )
         return nullptr;
     if ( auto deriv = llvm::dyn_cast< llvm::DIDerivedType >( t ) )
-        return deriv->getBaseType().resolve();
+        return deriv->getBaseType();
     if ( auto comp = llvm::dyn_cast< llvm::DICompositeType >( t ) )
-        return comp->getBaseType().resolve();
+        return comp->getBaseType();
     return nullptr;
 }
 
@@ -224,7 +224,7 @@ std::string Node< Prog, Heap >::di_scopename( llvm::DIScope *scope )
     if ( !scope )
         scope = _di_var->getScope();
 
-    auto parent = scope->getScope().resolve();
+    auto parent = scope->getScope();
 
     if ( parent && llvm::isa< llvm::DINamespace >( parent ) )
         n = di_scopename( parent ) + "::";
@@ -251,13 +251,13 @@ std::string Node< Prog, Heap >::di_name( llvm::DIType *t, bool in_alias, bool pr
     {
         auto types = subr->getTypeArray();
         std::stringstream fmt;
-        if ( auto rvt = types[0].resolve() )
+        if ( auto rvt = types[0] )
             fmt << di_name( rvt ) << "(";
         else
             fmt << "void" << "(";
         for ( unsigned i = 1; i < types.size(); ++i )
         {
-            auto subt = types[i].resolve(); // null means ellipsis here
+            auto subt = types[i]; // null means ellipsis here
             fmt << ( subt ? di_name( subt ) : "..." ) << ( i + 1 < types.size() ? ", " : "" );
         }
         fmt << ")";
@@ -554,7 +554,7 @@ llvm::DIType *Node< Prog, Heap >::di_resolve( llvm::DIType *t )
                DT->getTag() == llvm::dwarf::DW_TAG_restrict_type ||
                DT->getTag() == llvm::dwarf::DW_TAG_volatile_type ||
                DT->getTag() == llvm::dwarf::DW_TAG_const_type ) )
-            base = DT->getBaseType().resolve();
+            base = DT->getBaseType();
         else return base;
     return t;
 }
@@ -607,8 +607,13 @@ void Node< Prog, Heap >::array_elements( YieldDN yield )
     // variable-length arrays are allocated as pointers to the element type,
     // not as sequential types
     auto type = _type;
-    if ( llvm::isa< llvm::SequentialType >( type ) )
-        type = _type->getSequentialElementType();
+    
+    if (auto *AT = llvm::dyn_cast<llvm::ArrayType>(type)) {
+      type = AT->getElementType();
+    } else if (auto *VT = llvm::dyn_cast<llvm::VectorType>(type)) {
+      type = VT->getElementType();
+    }
+
     int size = _ctx.program().TD.getTypeAllocSize( type );
 
     for ( int idx = 0; boundcheck( idx * size, size ); ++ idx )
@@ -647,7 +652,7 @@ void Node< Prog, Heap >::localvar( YieldDN yield, llvm::DbgDeclareInst *DDI )
     lvar.address( DNKind::Object, ptr.cooked() );
     lvar.type( type );
     lvar.di_var( divar );
-    lvar._var_loc = DDI->getVariableLocation();
+    lvar._var_loc = DDI->getVariableLocationOp(0);
     lvar._di_inst = DDI;
     yield( name, lvar );
 }
@@ -690,7 +695,7 @@ void Node< Prog, Heap >::localvar( YieldDN yield, llvm::DbgValueInst *DDV )
     lvar.bounds( 0, bound );
     lvar.type( type );
     lvar.di_var( divar );
-    lvar._var_loc = DDV->getVariableLocation();
+    lvar._var_loc = DDV->getVariableLocationOp(0);
     lvar._di_inst = DDV;
     yield( name, lvar );
 }
@@ -778,9 +783,9 @@ void Node< Prog, Heap >::globalvars( YieldDN yield )
         Node dn( _ctx, _snapshot );
         dn.address( DNKind::Object, ptr );
         dn.di_var( GV );
-        dn.di_type( GV->getType().resolve() );
+        dn.di_type( GV->getType() );
         dn.type( var->getType()->getPointerElementType() );
-        std::string name = GV->getName();
+        std::string name = GV->getName().str();
         if ( llvm::isa< llvm::DINamespace >( GV->getScope() ) )
             name = dn.di_scopename() + "::" + name;
         if ( disamb[ name ] )

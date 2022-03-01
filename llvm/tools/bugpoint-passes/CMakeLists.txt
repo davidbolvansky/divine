@@ -13,3 +13,11 @@ endif()
 if(WIN32 OR CYGWIN)
   set(LLVM_LINK_COMPONENTS Core)
 endif()
+
+add_llvm_library( BugpointPasses MODULE BUILDTREE_ONLY
+  TestPasses.cpp
+
+  DEPENDS
+  intrinsics_gen
+  bugpoint
+  )

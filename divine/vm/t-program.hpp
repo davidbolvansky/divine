@@ -47,7 +47,7 @@ auto ir2prog( Build build, std::string funcname, llvm::FunctionType *ft = nullpt
     if ( !ft )
         ft = llvm::FunctionType::get( llvm::Type::getInt32Ty( *testContext() ), false );
     auto m = std::make_unique< llvm::Module >( "test.ll", *testContext() );
-    auto f = llvm::cast< llvm::Function >( m->getOrInsertFunction( funcname, ft ) );
+    auto f = llvm::cast< llvm::Function >( m->getOrInsertFunction( funcname, ft ).getCallee() );
     auto bb = llvm::BasicBlock::Create( *testContext(), "_entry", f );
     llvm::IRBuilder<> irb( bb );
     build( irb, f );

@@ -1,9 +1,8 @@
 //===- TypeFinder.cpp - Implement the TypeFinder class --------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -15,6 +14,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constant.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instruction.h"
@@ -78,7 +78,7 @@ void TypeFinder::run(const Module &M, bool onlyNamed) {
   }
 
   for (const auto &NMD : M.named_metadata())
-    for (const auto &MDOp : NMD.operands())
+    for (const auto *MDOp : NMD.operands())
       incorporateMDNode(MDOp);
 }
 
@@ -152,6 +152,14 @@ void TypeFinder::incorporateMDNode(const MDNode *V) {
   // Already visited?
   if (!VisitedMetadata.insert(V).second)
     return;
+
+  // The arguments in DIArgList are not exposed as operands, so handle such
+  // nodes specifically here.
+  if (const auto *AL = dyn_cast<DIArgList>(V)) {
+    for (auto *Arg : AL->getArgs())
+      incorporateValue(Arg->getValue());
+    return;
+  }
 
   // Look in operands for types.
   for (Metadata *Op : V->operands()) {

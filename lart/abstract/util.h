@@ -96,7 +96,7 @@ namespace lart::abstract
         llvm::Function * get_function( Name name, Type ret, const Types &args )
         {
             auto fty = llvm::FunctionType::get( ret, args, false );
-            return llvm::cast< llvm::Function >( module()->getOrInsertFunction( name, fty ) );
+            return llvm::cast< llvm::Function >( module()->getOrInsertFunction( name, fty ).getCallee() );
         }
 
         llvm::Argument * argument( llvm::Function * fn, size_t i ) const noexcept
@@ -305,10 +305,8 @@ namespace lart::abstract
             return nullptr;
 
         if ( auto orig = llvm::dyn_cast< llvm::CallInst >( *ce->user_begin() ) ) {
-            auto fn = ce->getOperand( 0 );
-
             llvm::IRBuilder<> irb( orig );
-            llvm::Value * call = irb.CreateCall( fn, arguments( orig ) );
+            llvm::Value * call = irb.CreateCall( orig->getCalledFunction(), arguments( orig ) );
 
             if ( call->getType() != orig->getType() )
                 call = irb.CreateBitCast( call, orig->getType() );

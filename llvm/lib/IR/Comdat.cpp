@@ -1,9 +1,8 @@
 //===- Comdat.cpp - Implement Metadata classes ----------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -48,8 +47,8 @@ LLVMComdatSelectionKind LLVMGetComdatSelectionKind(LLVMComdatRef C) {
     return LLVMExactMatchComdatSelectionKind;
   case Comdat::Largest:
     return LLVMLargestComdatSelectionKind;
-  case Comdat::NoDuplicates:
-    return LLVMNoDuplicatesComdatSelectionKind;
+  case Comdat::NoDeduplicate:
+    return LLVMNoDeduplicateComdatSelectionKind;
   case Comdat::SameSize:
     return LLVMSameSizeComdatSelectionKind;
   }
@@ -68,8 +67,8 @@ void LLVMSetComdatSelectionKind(LLVMComdatRef C, LLVMComdatSelectionKind kind) {
   case LLVMLargestComdatSelectionKind:
     Cd->setSelectionKind(Comdat::Largest);
     break;
-  case LLVMNoDuplicatesComdatSelectionKind:
-    Cd->setSelectionKind(Comdat::NoDuplicates);
+  case LLVMNoDeduplicateComdatSelectionKind:
+    Cd->setSelectionKind(Comdat::NoDeduplicate);
     break;
   case LLVMSameSizeComdatSelectionKind:
     Cd->setSelectionKind(Comdat::SameSize);

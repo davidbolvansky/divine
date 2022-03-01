@@ -102,7 +102,7 @@ struct libc_indirect_calls : abstract::LLVMUtil< libc_indirect_calls >
             for ( auto i = cs.arg_size(); i < args_size; ++i )
                 new_args.push_back( undef( i64Ty() ) );
 
-            auto new_call = ir.CreateCall( casted_callee, new_args );
+            auto new_call = ir.CreateCall( correct_type, casted_callee, new_args );
             c_inst->replaceAllUsesWith( new_call );
             c_inst->eraseFromParent();
         }

@@ -1,9 +1,8 @@
 //===-- DiffLog.h - Difference Log Builder and accessories ------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -35,7 +34,7 @@ namespace llvm {
     /// might be initializing this format.
     StringRef Format;
 
-    SmallVector<Value*, 4> Arguments;
+    SmallVector<const Value *, 4> Arguments;
 
   public:
     LogBuilder(Consumer &c, StringRef Format) : consumer(&c), Format(Format) {}
@@ -45,7 +44,7 @@ namespace llvm {
       L.consumer = nullptr;
     }
 
-    LogBuilder &operator<<(Value *V) {
+    LogBuilder &operator<<(const Value *V) {
       Arguments.push_back(V);
       return *this;
     }
@@ -54,12 +53,12 @@ namespace llvm {
 
     StringRef getFormat() const;
     unsigned getNumArguments() const;
-    Value *getArgument(unsigned I) const;
+    const Value *getArgument(unsigned I) const;
   };
 
   /// A temporary-object class for building up diff messages.
   class DiffLogBuilder {
-    typedef std::pair<Instruction*,Instruction*> DiffRecord;
+    typedef std::pair<const Instruction *, const Instruction *> DiffRecord;
     SmallVector<DiffRecord, 20> Diff;
 
     Consumer &consumer;
@@ -68,15 +67,15 @@ namespace llvm {
     DiffLogBuilder(Consumer &c) : consumer(c) {}
     ~DiffLogBuilder();
 
-    void addMatch(Instruction *L, Instruction *R);
+    void addMatch(const Instruction *L, const Instruction *R);
     // HACK: VS 2010 has a bug in the stdlib that requires this.
-    void addLeft(Instruction *L);
-    void addRight(Instruction *R);
+    void addLeft(const Instruction *L);
+    void addRight(const Instruction *R);
 
     unsigned getNumLines() const;
     DiffChange getLineKind(unsigned I) const;
-    Instruction *getLeft(unsigned I) const;
-    Instruction *getRight(unsigned I) const;
+    const Instruction *getLeft(unsigned I) const;
+    const Instruction *getRight(unsigned I) const;
   };
 
 }

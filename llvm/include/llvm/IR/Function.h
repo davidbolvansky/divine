@@ -1,9 +1,8 @@
 //===- llvm/Function.h - Class to represent a single function ---*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -44,7 +43,7 @@
 namespace llvm {
 
 namespace Intrinsic {
-enum ID : unsigned;
+typedef unsigned ID;
 }
 
 class AssemblyAnnotationWriter;
@@ -56,8 +55,11 @@ template <typename T> class Optional;
 class raw_ostream;
 class Type;
 class User;
+class BranchProbabilityInfo;
+class BlockFrequencyInfo;
 
-class Function : public GlobalObject, public ilist_node<Function> {
+class LLVM_EXTERNAL_VISIBILITY Function : public GlobalObject,
+                                          public ilist_node<Function> {
 public:
   using BasicBlockListType = SymbolTableList<BasicBlock>;
 
@@ -120,7 +122,7 @@ private:
   /// function is automatically inserted into the end of the function list for
   /// the module.
   ///
-  Function(FunctionType *Ty, LinkageTypes Linkage,
+  Function(FunctionType *Ty, LinkageTypes Linkage, unsigned AddrSpace,
            const Twine &N = "", Module *M = nullptr);
 
 public:
@@ -134,9 +136,33 @@ public:
   const Function &getFunction() const { return *this; }
 
   static Function *Create(FunctionType *Ty, LinkageTypes Linkage,
-                          const Twine &N = "", Module *M = nullptr) {
-    return new Function(Ty, Linkage, N, M);
+                          unsigned AddrSpace, const Twine &N = "",
+                          Module *M = nullptr) {
+    return new Function(Ty, Linkage, AddrSpace, N, M);
   }
+
+  // TODO: remove this once all users have been updated to pass an AddrSpace
+  static Function *Create(FunctionType *Ty, LinkageTypes Linkage,
+                          const Twine &N = "", Module *M = nullptr) {
+    return new Function(Ty, Linkage, static_cast<unsigned>(-1), N, M);
+  }
+
+  /// Creates a new function and attaches it to a module.
+  ///
+  /// Places the function in the program address space as specified
+  /// by the module's data layout.
+  static Function *Create(FunctionType *Ty, LinkageTypes Linkage,
+                          const Twine &N, Module &M);
+
+  /// Creates a function with some attributes recorded in llvm.module.flags
+  /// applied.
+  ///
+  /// Use this when synthesizing new functions that need attributes that would
+  /// have been set by command line options.
+  static Function *createWithDefaultAttr(FunctionType *Ty, LinkageTypes Linkage,
+                                         unsigned AddrSpace,
+                                         const Twine &N = "",
+                                         Module *M = nullptr);
 
   // Provide fast operand accessors.
   DECLARE_TRANSPARENT_OPERAND_ACCESSORS(Value);
@@ -144,7 +170,7 @@ public:
   /// Returns the number of non-debug IR instructions in this function.
   /// This is equivalent to the sum of the sizes of each basic block contained
   /// within this function.
-  unsigned getInstructionCount();
+  unsigned getInstructionCount() const;
 
   /// Returns the FunctionType for me.
   FunctionType *getFunctionType() const {
@@ -183,6 +209,20 @@ public:
   /// It's possible for this function to return true while getIntrinsicID()
   /// returns Intrinsic::not_intrinsic!
   bool isIntrinsic() const { return HasLLVMReservedName; }
+
+  /// isTargetIntrinsic - Returns true if IID is an intrinsic specific to a
+  /// certain target. If it is a generic intrinsic false is returned.
+  static bool isTargetIntrinsic(Intrinsic::ID IID);
+
+  /// isTargetIntrinsic - Returns true if this function is an intrinsic and the
+  /// intrinsic is specific to a certain target. If this is not an intrinsic
+  /// or a generic intrinsic, false is returned.
+  bool isTargetIntrinsic() const;
+
+  /// Returns true if the function is one of the "Constrained Floating-Point
+  /// Intrinsics". Returns false if not, and returns false when
+  /// getIntrinsicID() returns Intrinsic::not_intrinsic.
+  bool isConstrainedFPIntrinsic() const;
 
   static Intrinsic::ID lookupIntrinsicID(StringRef Name);
 
@@ -239,6 +279,12 @@ public:
         getContext(), AttributeList::FunctionIndex, Kind));
   }
 
+  /// A function will have the "coroutine.presplit" attribute if it's
+  /// a coroutine and has not gone through full CoroSplit pass.
+  bool isPresplitCoroutine() const {
+    return hasFnAttribute("coroutine.presplit");
+  }
+
   enum ProfileCountType { PCT_Invalid, PCT_Real, PCT_Synthetic };
 
   /// Class to represent profile counts.
@@ -283,15 +329,18 @@ public:
 
   /// Get the entry count for this function.
   ///
-  /// Entry count is the number of times the function was executed based on
-  /// pgo data.
-  ProfileCount getEntryCount() const;
+  /// Entry count is the number of times the function was executed.
+  /// When AllowSynthetic is false, only pgo_data will be returned.
+  ProfileCount getEntryCount(bool AllowSynthetic = false) const;
 
   /// Return true if the function is annotated with profile data.
   ///
   /// Presence of entry counts from a profile run implies the function has
-  /// profile annotations.
-  bool hasProfileData() const { return getEntryCount().hasValue(); }
+  /// profile annotations. If IncludeSynthetic is false, only return true
+  /// when the profile data is real.
+  bool hasProfileData(bool IncludeSynthetic = false) const {
+    return getEntryCount(IncludeSynthetic).hasValue();
+  }
 
   /// Returns the set of GUIDs that needs to be imported to the function for
   /// sample PGO, to enable the same inlines as the profiled optimized binary.
@@ -327,6 +376,16 @@ public:
   unsigned getFnStackAlignment() const {
     if (!hasFnAttribute(Attribute::StackAlignment))
       return 0;
+    if (const auto MA =
+            AttributeSets.getStackAlignment(AttributeList::FunctionIndex))
+      return MA->value();
+    return 0;
+  }
+
+  /// Return the stack alignment for the function.
+  MaybeAlign getFnStackAlign() const {
+    if (!hasFnAttribute(Attribute::StackAlignment))
+      return None;
     return AttributeSets.getStackAlignment(AttributeList::FunctionIndex);
   }
 
@@ -338,6 +397,9 @@ public:
   const std::string &getGC() const;
   void setGC(std::string Str);
   void clearGC();
+
+  /// Returns true if the function has ssp, sspstrong, or sspreq fn attrs.
+  bool hasStackProtectorFnAttr() const;
 
   /// adds the attribute to the list of attributes.
   void addAttribute(unsigned i, Attribute::AttrKind Kind);
@@ -375,6 +437,10 @@ public:
   /// removes the attribute from the list of attributes.
   void removeParamAttrs(unsigned ArgNo, const AttrBuilder &Attrs);
 
+  /// removes noundef and other attributes that imply undefined behavior if a
+  /// `undef` or `poison` value is passed from the list of attributes.
+  void removeParamUndefImplyingAttrs(unsigned ArgNo);
+
   /// check if an attributes is in the list of attributes.
   bool hasAttribute(unsigned i, Attribute::AttrKind Kind) const {
     return getAttributes().hasAttribute(i, Kind);
@@ -383,6 +449,11 @@ public:
   /// check if an attributes is in the list of attributes.
   bool hasParamAttribute(unsigned ArgNo, Attribute::AttrKind Kind) const {
     return getAttributes().hasParamAttribute(ArgNo, Kind);
+  }
+
+  /// gets the specified attribute from the list of attributes.
+  Attribute getParamAttribute(unsigned ArgNo, Attribute::AttrKind Kind) const {
+    return getAttributes().getParamAttr(ArgNo, Kind);
   }
 
   /// gets the attribute from the list of attributes.
@@ -411,8 +482,40 @@ public:
   void addDereferenceableOrNullParamAttr(unsigned ArgNo, uint64_t Bytes);
 
   /// Extract the alignment for a call or parameter (0=unknown).
+  /// FIXME: Remove this function once transition to Align is over.
+  /// Use getParamAlign() instead.
   unsigned getParamAlignment(unsigned ArgNo) const {
+    if (const auto MA = getParamAlign(ArgNo))
+      return MA->value();
+    return 0;
+  }
+
+  MaybeAlign getParamAlign(unsigned ArgNo) const {
     return AttributeSets.getParamAlignment(ArgNo);
+  }
+
+  MaybeAlign getParamStackAlign(unsigned ArgNo) const {
+    return AttributeSets.getParamStackAlignment(ArgNo);
+  }
+
+  /// Extract the byval type for a parameter.
+  Type *getParamByValType(unsigned ArgNo) const {
+    return AttributeSets.getParamByValType(ArgNo);
+  }
+
+  /// Extract the sret type for a parameter.
+  Type *getParamStructRetType(unsigned ArgNo) const {
+    return AttributeSets.getParamStructRetType(ArgNo);
+  }
+
+  /// Extract the inalloca type for a parameter.
+  Type *getParamInAllocaType(unsigned ArgNo) const {
+    return AttributeSets.getParamInAllocaType(ArgNo);
+  }
+
+  /// Extract the byref type for a parameter.
+  Type *getParamByRefType(unsigned ArgNo) const {
+    return AttributeSets.getParamByRefType(ArgNo);
   }
 
   /// Extract the number of dereferenceable bytes for a call or
@@ -537,6 +640,22 @@ public:
     addFnAttr(Attribute::Speculatable);
   }
 
+  /// Determine if the call might deallocate memory.
+  bool doesNotFreeMemory() const {
+    return onlyReadsMemory() || hasFnAttribute(Attribute::NoFree);
+  }
+  void setDoesNotFreeMemory() {
+    addFnAttr(Attribute::NoFree);
+  }
+
+  /// Determine if the call can synchroize with other threads
+  bool hasNoSync() const {
+    return hasFnAttribute(Attribute::NoSync);
+  }
+  void setNoSync() {
+    addFnAttr(Attribute::NoSync);
+  }
+
   /// Determine if the function is known not to recurse, directly or
   /// indirectly.
   bool doesNotRecurse() const {
@@ -545,6 +664,17 @@ public:
   void setDoesNotRecurse() {
     addFnAttr(Attribute::NoRecurse);
   }
+
+  /// Determine if the function is required to make forward progress.
+  bool mustProgress() const {
+    return hasFnAttribute(Attribute::MustProgress) ||
+           hasFnAttribute(Attribute::WillReturn);
+  }
+  void setMustProgress() { addFnAttr(Attribute::MustProgress); }
+
+  /// Determine if the function will return.
+  bool willReturn() const { return hasFnAttribute(Attribute::WillReturn); }
+  void setWillReturn() { addFnAttr(Attribute::WillReturn); }
 
   /// True if the ABI mandates (or the user requested) that this
   /// function be in a unwind table.
@@ -577,13 +707,20 @@ public:
     addAttribute(AttributeList::ReturnIndex, Attribute::NoAlias);
   }
 
+  /// Do not optimize this function (-O0).
+  bool hasOptNone() const { return hasFnAttribute(Attribute::OptimizeNone); }
+
   /// Optimize this function for minimum size (-Oz).
-  bool optForMinSize() const { return hasFnAttribute(Attribute::MinSize); }
+  bool hasMinSize() const { return hasFnAttribute(Attribute::MinSize); }
 
   /// Optimize this function for size (-Os) or minimum size (-Oz).
-  bool optForSize() const {
-    return hasFnAttribute(Attribute::OptimizeForSize) || optForMinSize();
+  bool hasOptSize() const {
+    return hasFnAttribute(Attribute::OptimizeForSize) || hasMinSize();
   }
+
+  /// Returns the denormal handling type for the default rounding mode of the
+  /// function.
+  DenormalMode getDenormalMode(const fltSemantics &FPType) const;
 
   /// copyAttributesFrom - copy all additional attributes (those not needed to
   /// create a Function) from the Function Src to this one.
@@ -672,6 +809,12 @@ public:
     return Arguments + NumArgs;
   }
 
+  Argument* getArg(unsigned i) const {
+    assert (i < NumArgs && "getArg() out of range!");
+    CheckLazyArguments();
+    return Arguments + i;
+  }
+
   iterator_range<arg_iterator> args() {
     return make_range(arg_begin(), arg_end());
   }
@@ -725,12 +868,20 @@ public:
   ///
   void viewCFG() const;
 
+  /// Extended form to print edge weights.
+  void viewCFG(bool ViewCFGOnly, const BlockFrequencyInfo *BFI,
+               const BranchProbabilityInfo *BPI) const;
+
   /// viewCFGOnly - This function is meant for use from the debugger.  It works
   /// just like viewCFG, but it does not include the contents of basic blocks
   /// into the nodes, just the label.  If you are only interested in the CFG
   /// this can make the graph smaller.
   ///
   void viewCFGOnly() const;
+
+  /// Extended form to print edge weights.
+  void viewCFGOnly(const BlockFrequencyInfo *BFI,
+                   const BranchProbabilityInfo *BPI) const;
 
   /// Methods for support type inquiry through isa, cast, and dyn_cast:
   static bool classof(const Value *V) {
@@ -753,9 +904,14 @@ public:
 
   /// hasAddressTaken - returns true if there are any uses of this function
   /// other than direct calls or invokes to it, or blockaddress expressions.
-  /// Optionally passes back an offending user for diagnostic purposes.
+  /// Optionally passes back an offending user for diagnostic purposes,
+  /// ignores callback uses, assume like pointer annotation calls, and
+  /// references in llvm.used and llvm.compiler.used variables.
   ///
-  bool hasAddressTaken(const User** = nullptr) const;
+  bool hasAddressTaken(const User ** = nullptr,
+                       bool IgnoreCallbackUses = false,
+                       bool IgnoreAssumeLikeCalls = true,
+                       bool IngoreLLVMUsed = false) const;
 
   /// isDefTriviallyDead - Return true if it is trivially safe to remove
   /// this function definition from the module (because it isn't externally

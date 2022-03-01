@@ -91,13 +91,12 @@ struct ScalarMemory
 
         llvm::IRBuilder<> builder( load );
         llvm::Value *agg = llvm::UndefValue::get( ty );
-        if ( auto sty = llvm::dyn_cast< llvm::CompositeType >( ty ) )
-            for ( unsigned i = 0; i < sty->getNumContainedTypes(); ++i ) {
-                auto geptr = builder.CreateConstGEP2_32( sty, load->getOperand(0), 0, i );
-                auto val = builder.CreateLoad( geptr );
-                auto tval = transform( val );
-                agg = builder.CreateInsertValue( agg, tval, i );
-            }
+        for ( unsigned i = 0; i < ty->getNumContainedTypes(); ++i ) {
+            auto geptr = builder.CreateConstGEP2_32( ty, load->getOperand(0), 0, i );
+            auto val = builder.CreateLoad( geptr );
+            auto tval = transform( val );
+            agg = builder.CreateInsertValue( agg, tval, i );
+        }
         load->replaceAllUsesWith( agg );
         load->eraseFromParent();
         return llvm::cast< llvm::Instruction >( agg );
@@ -111,13 +110,12 @@ struct ScalarMemory
         llvm::IRBuilder<> builder( store );
         llvm::Value *agg = store->getValueOperand();
         llvm::Instruction *replace = nullptr;
-        if ( auto sty = llvm::dyn_cast< llvm::CompositeType >( ty ) )
-            for ( unsigned i = 0; i < sty->getNumContainedTypes(); ++i ) {
-                auto geptr = builder.CreateConstGEP2_32( sty, store->getPointerOperand(), 0, i );
-                auto val = builder.CreateExtractValue( agg, i );
-                auto nstore = builder.CreateStore( val, geptr );
-                replace = transform( nstore );
-            }
+        for ( unsigned i = 0; i < ty->getNumContainedTypes(); ++i ) {
+            auto geptr = builder.CreateConstGEP2_32( ty, store->getPointerOperand(), 0, i );
+            auto val = builder.CreateExtractValue( agg, i );
+            auto nstore = builder.CreateStore( val, geptr );
+            replace = transform( nstore );
+        }
         if ( replace ) {
             store->replaceAllUsesWith( replace );
             store->eraseFromParent();

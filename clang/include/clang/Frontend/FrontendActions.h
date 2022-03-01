@@ -1,9 +1,8 @@
 //===-- FrontendActions.h - Useful Frontend Actions -------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,6 +31,17 @@ class InitOnlyAction : public FrontendAction {
 public:
   // Don't claim to only use the preprocessor, we want to follow the AST path,
   // but do nothing.
+  bool usesPreprocessorOnly() const override { return false; }
+};
+
+/// Preprocessor-based frontend action that also loads PCH files.
+class ReadPCHAndPreprocessAction : public FrontendAction {
+  void ExecuteAction() override;
+
+  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
+                                                 StringRef InFile) override;
+
+public:
   bool usesPreprocessorOnly() const override { return false; }
 };
 
@@ -70,12 +80,6 @@ protected:
 };
 
 class ASTViewAction : public ASTFrontendAction {
-protected:
-  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
-                                                 StringRef InFile) override;
-};
-
-class DeclContextPrintAction : public ASTFrontendAction {
 protected:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef InFile) override;
@@ -124,6 +128,17 @@ protected:
   }
 
   bool hasASTFileSupport() const override { return false; }
+
+  bool shouldEraseOutputFiles() override;
+};
+
+class GenerateInterfaceStubsAction : public ASTFrontendAction {
+protected:
+  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
+                                                 StringRef InFile) override;
+
+  TranslationUnitKind getTranslationUnitKind() override { return TU_Module; }
+  bool hasASTFileSupport() const override { return false; }
 };
 
 class GenerateModuleFromModuleMapAction : public GenerateModuleAction {
@@ -136,6 +151,19 @@ private:
 
 class GenerateModuleInterfaceAction : public GenerateModuleAction {
 private:
+  bool BeginSourceFileAction(CompilerInstance &CI) override;
+
+  std::unique_ptr<raw_pwrite_stream>
+  CreateOutputFile(CompilerInstance &CI, StringRef InFile) override;
+};
+
+class GenerateHeaderModuleAction : public GenerateModuleAction {
+  /// The synthesized module input buffer for the current compilation.
+  std::unique_ptr<llvm::MemoryBuffer> Buffer;
+  std::vector<std::string> ModuleHeaders;
+
+private:
+  bool PrepareToExecuteAction(CompilerInstance &CI) override;
   bool BeginSourceFileAction(CompilerInstance &CI) override;
 
   std::unique_ptr<raw_pwrite_stream>
@@ -234,6 +262,17 @@ protected:
   bool usesPreprocessorOnly() const override { return true; }
 };
 
+class PrintDependencyDirectivesSourceMinimizerAction : public FrontendAction {
+protected:
+  void ExecuteAction() override;
+  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &,
+                                                 StringRef) override {
+    return nullptr;
+  }
+
+  bool usesPreprocessorOnly() const override { return true; }
+};
+
 //===----------------------------------------------------------------------===//
 // Preprocessor Actions
 //===----------------------------------------------------------------------===//
@@ -244,11 +283,6 @@ protected:
 };
 
 class DumpTokensAction : public PreprocessorFrontendAction {
-protected:
-  void ExecuteAction() override;
-};
-
-class GeneratePTHAction : public PreprocessorFrontendAction {
 protected:
   void ExecuteAction() override;
 };

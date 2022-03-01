@@ -23,6 +23,7 @@
 #include <system_error>
 #include <string>
 #include <tuple>
+#include <functional>
 
 namespace brq
 {

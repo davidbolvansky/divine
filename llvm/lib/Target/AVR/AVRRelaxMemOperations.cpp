@@ -1,9 +1,8 @@
 //===-- AVRRelaxMemOperations.cpp - Relax out of range loads/stores -------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -114,7 +113,7 @@ bool AVRRelaxMem::relax<AVR::STDWPtrQRr>(Block &MBB, BlockIt MBBI) {
 
     // Pop the original state of the pointer register.
     buildMI(MBB, MBBI, AVR::POPWRd)
-      .addReg(Ptr.getReg(), getKillRegState(Ptr.isKill()));
+      .addDef(Ptr.getReg(), getKillRegState(Ptr.isKill()));
 
     MI.removeFromParent();
   }

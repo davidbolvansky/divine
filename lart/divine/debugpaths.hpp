@@ -16,7 +16,7 @@ namespace divine {
 template< typename Mapper >
 void rewriteFileDebugPath( llvm::DIFile *file, Mapper &map, llvm::LLVMContext &ctx )
 {
-    std::string path = file->getFilename();
+    std::string path = file->getFilename().str();
     std::string npath = map( path );
     if ( path != npath )
         for ( int i = 0, end = file->getNumOperands(); i < end; ++i )

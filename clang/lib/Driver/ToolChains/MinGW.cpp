@@ -1,22 +1,24 @@
 //===--- MinGW.cpp - MinGWToolChain Implementation ------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "MinGW.h"
-#include "InputInfo.h"
 #include "CommonArgs.h"
+#include "clang/Config/config.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
+#include "clang/Driver/InputInfo.h"
 #include "clang/Driver/Options.h"
+#include "clang/Driver/SanitizerArgs.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include <system_error>
 
 using namespace clang::diag;
@@ -48,11 +50,12 @@ void tools::MinGW::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(II.getFilename());
 
   const char *Exec = Args.MakeArgString(getToolChain().GetProgramPath("as"));
-  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs, Inputs));
+  C.addCommand(std::make_unique<Command>(JA, *this, ResponseFileSupport::None(),
+                                         Exec, CmdArgs, Inputs, Output));
 
   if (Args.hasArg(options::OPT_gsplit_dwarf))
     SplitDebugInfo(getToolChain(), C, *this, JA, Args, Output,
-                   SplitDebugName(Args, Inputs[0]));
+                   SplitDebugName(JA, Args, Inputs[0], Output));
 }
 
 void tools::MinGW::Linker::AddLibGCC(const ArgList &Args,
@@ -95,7 +98,7 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                                         const char *LinkingOutput) const {
   const ToolChain &TC = getToolChain();
   const Driver &D = TC.getDriver();
-  // const SanitizerArgs &Sanitize = TC.getSanitizerArgs();
+  const SanitizerArgs &Sanitize = TC.getSanitizerArgs();
 
   ArgStringList CmdArgs;
 
@@ -133,10 +136,13 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     llvm_unreachable("Unsupported target architecture.");
   }
 
-  if (Args.hasArg(options::OPT_mwindows)) {
+  Arg *SubsysArg =
+      Args.getLastArg(options::OPT_mwindows, options::OPT_mconsole);
+  if (SubsysArg && SubsysArg->getOption().matches(options::OPT_mwindows)) {
     CmdArgs.push_back("--subsystem");
     CmdArgs.push_back("windows");
-  } else if (Args.hasArg(options::OPT_mconsole)) {
+  } else if (SubsysArg &&
+             SubsysArg->getOption().matches(options::OPT_mconsole)) {
     CmdArgs.push_back("--subsystem");
     CmdArgs.push_back("console");
   }
@@ -159,7 +165,16 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   CmdArgs.push_back("-o");
-  CmdArgs.push_back(Output.getFilename());
+  const char *OutputFile = Output.getFilename();
+  // GCC implicitly adds an .exe extension if it is given an output file name
+  // that lacks an extension.
+  // GCC used to do this only when the compiler itself runs on windows, but
+  // since GCC 8 it does the same when cross compiling as well.
+  if (!llvm::sys::path::has_extension(OutputFile)) {
+    CmdArgs.push_back(Args.MakeArgString(Twine(OutputFile) + ".exe"));
+    OutputFile = CmdArgs.back();
+  } else
+    CmdArgs.push_back(OutputFile);
 
   Args.AddAllArgs(CmdArgs, options::OPT_e);
   // FIXME: add -N, -n flags
@@ -185,9 +200,18 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   Args.AddAllArgs(CmdArgs, options::OPT_L);
   TC.AddFilePathLibArgs(Args, CmdArgs);
-  AddLinkerInputs(TC, Inputs, Args, CmdArgs, JA);
 
-  // TODO: Add ASan stuff here
+  // Add the compiler-rt library directories if they exist to help
+  // the linker find the various sanitizer, builtin, and profiling runtimes.
+  for (const auto &LibPath : TC.getLibraryPaths()) {
+    if (TC.getVFS().exists(LibPath))
+      CmdArgs.push_back(Args.MakeArgString("-L" + LibPath));
+  }
+  auto CRTPath = TC.getCompilerRTPath();
+  if (TC.getVFS().exists(CRTPath))
+    CmdArgs.push_back(Args.MakeArgString("-L" + CRTPath));
+
+  AddLinkerInputs(TC, Inputs, Args, CmdArgs, JA);
 
   // TODO: Add profile stuff here
 
@@ -220,8 +244,24 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         CmdArgs.push_back("-lssp_nonshared");
         CmdArgs.push_back("-lssp");
       }
-      if (Args.hasArg(options::OPT_fopenmp))
-        CmdArgs.push_back("-lgomp");
+
+      if (Args.hasFlag(options::OPT_fopenmp, options::OPT_fopenmp_EQ,
+                       options::OPT_fno_openmp, false)) {
+        switch (TC.getDriver().getOpenMPRuntime(Args)) {
+        case Driver::OMPRT_OMP:
+          CmdArgs.push_back("-lomp");
+          break;
+        case Driver::OMPRT_IOMP5:
+          CmdArgs.push_back("-liomp5md");
+          break;
+        case Driver::OMPRT_GOMP:
+          CmdArgs.push_back("-lgomp");
+          break;
+        case Driver::OMPRT_Unknown:
+          // Already diagnosed.
+          break;
+        }
+      }
 
       AddLibGCC(Args, CmdArgs);
 
@@ -230,6 +270,26 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
       if (Args.hasArg(options::OPT_pthread))
         CmdArgs.push_back("-lpthread");
+
+      if (Sanitize.needsAsanRt()) {
+        // MinGW always links against a shared MSVCRT.
+        CmdArgs.push_back(TC.getCompilerRTArgString(Args, "asan_dynamic",
+                                                    ToolChain::FT_Shared));
+        CmdArgs.push_back(
+            TC.getCompilerRTArgString(Args, "asan_dynamic_runtime_thunk"));
+        CmdArgs.push_back("--require-defined");
+        CmdArgs.push_back(TC.getArch() == llvm::Triple::x86
+                              ? "___asan_seh_interceptor"
+                              : "__asan_seh_interceptor");
+        // Make sure the linker consider all object files from the dynamic
+        // runtime thunk.
+        CmdArgs.push_back("--whole-archive");
+        CmdArgs.push_back(
+            TC.getCompilerRTArgString(Args, "asan_dynamic_runtime_thunk"));
+        CmdArgs.push_back("--no-whole-archive");
+      }
+
+      TC.addProfileRTLibs(Args, CmdArgs);
 
       if (!HasWindowsApp) {
         // Add system libraries. If linking to libwindowsapp.a, that import
@@ -245,21 +305,26 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         CmdArgs.push_back("-lkernel32");
       }
 
-      if (Args.hasArg(options::OPT_static))
+      if (Args.hasArg(options::OPT_static)) {
         CmdArgs.push_back("--end-group");
-      else
+      } else {
         AddLibGCC(Args, CmdArgs);
+        if (!HasWindowsApp)
+          CmdArgs.push_back("-lkernel32");
+      }
     }
 
     if (!Args.hasArg(options::OPT_nostartfiles)) {
       // Add crtfastmath.o if available and fast math is enabled.
-      TC.AddFastMathRuntimeIfAvailable(Args, CmdArgs);
+      TC.addFastMathRuntimeIfAvailable(Args, CmdArgs);
 
       CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath("crtend.o")));
     }
   }
   const char *Exec = Args.MakeArgString(TC.GetLinkerPath());
-  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs, Inputs));
+  C.addCommand(std::make_unique<Command>(JA, *this,
+                                         ResponseFileSupport::AtFileUTF8(),
+                                         Exec, CmdArgs, Inputs, Output));
 }
 
 // Simplified from Generic_GCC::GCCInstallationDetector::ScanLibDirForGCCTriple.
@@ -276,7 +341,8 @@ static bool findGccVersion(StringRef LibDir, std::string &GccLibDir,
       continue;
     if (CandidateVersion <= Version)
       continue;
-    Ver = VersionText;
+    Version = CandidateVersion;
+    Ver = std::string(VersionText);
     GccLibDir = LI->path();
   }
   return Ver.size();
@@ -288,7 +354,7 @@ void toolchains::MinGW::findGccLibDir() {
   Archs[0] += "-w64-mingw32";
   Archs.emplace_back("mingw32");
   if (Arch.empty())
-    Arch = Archs[0].str();
+    Arch = std::string(Archs[0].str());
   // lib: Arch Linux, Ubuntu, Windows
   // lib64: openSUSE Linux
   for (StringRef CandidateLib : {"lib", "lib64"}) {
@@ -296,7 +362,7 @@ void toolchains::MinGW::findGccLibDir() {
       llvm::SmallString<1024> LibDir(Base);
       llvm::sys::path::append(LibDir, CandidateLib, "gcc", CandidateArch);
       if (findGccVersion(LibDir, GccLibDir, Ver)) {
-        Arch = CandidateArch;
+        Arch = std::string(CandidateArch);
         return;
       }
     }
@@ -325,7 +391,7 @@ llvm::ErrorOr<std::string> toolchains::MinGW::findClangRelativeSysroot() {
   StringRef Sep = llvm::sys::path::get_separator();
   for (StringRef CandidateSubdir : Subdirs) {
     if (llvm::sys::fs::is_directory(ClangRoot + Sep + CandidateSubdir)) {
-      Arch = CandidateSubdir;
+      Arch = std::string(CandidateSubdir);
       return (ClangRoot + Sep + CandidateSubdir).str();
     }
   }
@@ -334,7 +400,8 @@ llvm::ErrorOr<std::string> toolchains::MinGW::findClangRelativeSysroot() {
 
 toolchains::MinGW::MinGW(const Driver &D, const llvm::Triple &Triple,
                          const ArgList &Args)
-    : ToolChain(D, Triple, Args), CudaInstallation(D, Triple, Args) {
+    : ToolChain(D, Triple, Args), CudaInstallation(D, Triple, Args),
+      RocmInstallation(D, Triple, Args) {
   getProgramPaths().push_back(getDriver().getInstalledDir());
 
   if (getDriver().SysRoot.size())
@@ -342,12 +409,13 @@ toolchains::MinGW::MinGW(const Driver &D, const llvm::Triple &Triple,
   // Look for <clang-bin>/../<triplet>; if found, use <clang-bin>/.. as the
   // base as it could still be a base for a gcc setup with libgcc.
   else if (llvm::ErrorOr<std::string> TargetSubdir = findClangRelativeSysroot())
-    Base = llvm::sys::path::parent_path(TargetSubdir.get());
+    Base = std::string(llvm::sys::path::parent_path(TargetSubdir.get()));
   else if (llvm::ErrorOr<std::string> GPPName = findGcc())
-    Base = llvm::sys::path::parent_path(
-        llvm::sys::path::parent_path(GPPName.get()));
+    Base = std::string(llvm::sys::path::parent_path(
+        llvm::sys::path::parent_path(GPPName.get())));
   else
-    Base = llvm::sys::path::parent_path(getDriver().getInstalledDir());
+    Base = std::string(
+        llvm::sys::path::parent_path(getDriver().getInstalledDir()));
 
   Base += llvm::sys::path::get_separator();
   findGccLibDir();
@@ -359,6 +427,10 @@ toolchains::MinGW::MinGW(const Driver &D, const llvm::Triple &Triple,
   getFilePaths().push_back(Base + "lib");
   // openSUSE
   getFilePaths().push_back(Base + Arch + "/sys-root/mingw/lib");
+
+  NativeLLVMSupport =
+      Args.getLastArgValue(options::OPT_fuse_ld_EQ, CLANG_DEFAULT_LINKER)
+          .equals_insensitive("lld");
 }
 
 bool toolchains::MinGW::IsIntegratedAssemblerDefault() const { return true; }
@@ -386,8 +458,19 @@ Tool *toolchains::MinGW::buildLinker() const {
   return new tools::MinGW::Linker(*this);
 }
 
+bool toolchains::MinGW::HasNativeLLVMSupport() const {
+  return NativeLLVMSupport;
+}
+
 bool toolchains::MinGW::IsUnwindTablesDefault(const ArgList &Args) const {
-  return getArch() == llvm::Triple::x86_64;
+  Arg *ExceptionArg = Args.getLastArg(options::OPT_fsjlj_exceptions,
+                                      options::OPT_fseh_exceptions,
+                                      options::OPT_fdwarf_exceptions);
+  if (ExceptionArg &&
+      ExceptionArg->getOption().matches(options::OPT_fseh_exceptions))
+    return true;
+  return getArch() == llvm::Triple::x86_64 ||
+         getArch() == llvm::Triple::aarch64;
 }
 
 bool toolchains::MinGW::isPICDefault() const {
@@ -402,9 +485,18 @@ bool toolchains::MinGW::isPICDefaultForced() const {
 
 llvm::ExceptionHandling
 toolchains::MinGW::GetExceptionModel(const ArgList &Args) const {
-  if (getArch() == llvm::Triple::x86_64)
+  if (getArch() == llvm::Triple::x86_64 || getArch() == llvm::Triple::aarch64)
     return llvm::ExceptionHandling::WinEH;
   return llvm::ExceptionHandling::DwarfCFI;
+}
+
+SanitizerMask toolchains::MinGW::getSupportedSanitizers() const {
+  SanitizerMask Res = ToolChain::getSupportedSanitizers();
+  Res |= SanitizerKind::Address;
+  Res |= SanitizerKind::PointerCompare;
+  Res |= SanitizerKind::PointerSubtract;
+  Res |= SanitizerKind::Vptr;
+  return Res;
 }
 
 void toolchains::MinGW::AddCudaIncludeArgs(const ArgList &DriverArgs,
@@ -412,8 +504,14 @@ void toolchains::MinGW::AddCudaIncludeArgs(const ArgList &DriverArgs,
   CudaInstallation.AddCudaIncludeArgs(DriverArgs, CC1Args);
 }
 
+void toolchains::MinGW::AddHIPIncludeArgs(const ArgList &DriverArgs,
+                                          ArgStringList &CC1Args) const {
+  RocmInstallation.AddHIPIncludeArgs(DriverArgs, CC1Args);
+}
+
 void toolchains::MinGW::printVerboseInfo(raw_ostream &OS) const {
   CudaInstallation.print(OS);
+  RocmInstallation.print(OS);
 }
 
 // Include directories for various hosts:

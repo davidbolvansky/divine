@@ -1,12 +1,11 @@
 //===--- LoopUnrolling.h - Unroll loops -------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
+/// \file
 /// This header contains the declarations of functions which are used to decide
 /// which loops should be completely unrolled and mark their corresponding
 /// CFGBlocks. It is done by tracking a stack of loops in the ProgramState. This
@@ -18,7 +17,6 @@
 ///   changed only in the increment statement corresponding to the loop. It also
 ///   has to be initialized by a literal in the corresponding initStmt.
 /// - Does not contain goto, switch and returnStmt.
-///
 ///
 //===----------------------------------------------------------------------===//
 

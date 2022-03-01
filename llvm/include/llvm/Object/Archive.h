@@ -1,9 +1,8 @@
 //===- Archive.h - ar archive file format -----------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -16,6 +15,7 @@
 
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/fallible_iterator.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Object/Binary.h"
 #include "llvm/Support/Chrono.h"
@@ -48,24 +48,21 @@ public:
   /// Get the name looking up long names.
   Expected<StringRef> getName(uint64_t Size) const;
 
-  /// Members are not larger than 4GB.
-  Expected<uint32_t> getSize() const;
+  Expected<uint64_t> getSize() const;
 
   Expected<sys::fs::perms> getAccessMode() const;
   Expected<sys::TimePoint<std::chrono::seconds>> getLastModified() const;
 
   StringRef getRawLastModified() const {
-    return StringRef(ArMemHdr->LastModified,
-                     sizeof(ArMemHdr->LastModified)).rtrim(' ');
+    return StringRef(ArMemHdr->LastModified, sizeof(ArMemHdr->LastModified))
+        .rtrim(' ');
   }
 
   Expected<unsigned> getUID() const;
   Expected<unsigned> getGID() const;
 
   // This returns the size of the private struct ArMemHdrType
-  uint64_t getSizeOf() const {
-    return sizeof(ArMemHdrType);
-  }
+  uint64_t getSizeOf() const { return sizeof(ArMemHdrType); }
 
 private:
   struct ArMemHdrType {
@@ -102,7 +99,7 @@ public:
     Child(const Archive *Parent, const char *Start, Error *Err);
     Child(const Archive *Parent, StringRef Data, uint16_t StartOfFile);
 
-    bool operator ==(const Child &other) const {
+    bool operator==(const Child &other) const {
       assert(!Parent || !other.Parent || Parent == other.Parent);
       return Data.begin() == other.Data.begin();
     }
@@ -118,9 +115,7 @@ public:
       return Header.getLastModified();
     }
 
-    StringRef getRawLastModified() const {
-      return Header.getRawLastModified();
-    }
+    StringRef getRawLastModified() const { return Header.getRawLastModified(); }
 
     Expected<unsigned> getUID() const { return Header.getUID(); }
     Expected<unsigned> getGID() const { return Header.getGID(); }
@@ -136,6 +131,7 @@ public:
 
     Expected<StringRef> getBuffer() const;
     uint64_t getChildOffset() const;
+    uint64_t getDataOffset() const { return getChildOffset() + StartOfFile; }
 
     Expected<MemoryBufferRef> getMemoryBufferRef() const;
 
@@ -143,43 +139,37 @@ public:
     getAsBinary(LLVMContext *Context = nullptr) const;
   };
 
-  class child_iterator {
+  class ChildFallibleIterator {
     Child C;
-    Error *E = nullptr;
 
   public:
-    child_iterator() : C(Child(nullptr, nullptr, nullptr)) {}
-    child_iterator(const Child &C, Error *E) : C(C), E(E) {}
+    ChildFallibleIterator() : C(Child(nullptr, nullptr, nullptr)) {}
+    ChildFallibleIterator(const Child &C) : C(C) {}
 
     const Child *operator->() const { return &C; }
     const Child &operator*() const { return C; }
 
-    bool operator==(const child_iterator &other) const {
+    bool operator==(const ChildFallibleIterator &other) const {
       // Ignore errors here: If an error occurred during increment then getNext
       // will have been set to child_end(), and the following comparison should
       // do the right thing.
       return C == other.C;
     }
 
-    bool operator!=(const child_iterator &other) const {
+    bool operator!=(const ChildFallibleIterator &other) const {
       return !(*this == other);
     }
 
-    // Code in loops with child_iterators must check for errors on each loop
-    // iteration.  And if there is an error break out of the loop.
-    child_iterator &operator++() { // Preincrement
-      assert(E && "Can't increment iterator with no Error attached");
-      ErrorAsOutParameter ErrAsOutParam(E);
-      if (auto ChildOrErr = C.getNext())
-        C = *ChildOrErr;
-      else {
-        C = C.getParent()->child_end().C;
-        *E = ChildOrErr.takeError();
-        E = nullptr;
-      }
-      return *this;
+    Error inc() {
+      auto NextChild = C.getNext();
+      if (!NextChild)
+        return NextChild.takeError();
+      C = std::move(*NextChild);
+      return Error::success();
     }
   };
+
+  using child_iterator = fallible_iterator<ChildFallibleIterator>;
 
   class Symbol {
     const Archive *Parent;
@@ -188,11 +178,9 @@ public:
 
   public:
     Symbol(const Archive *p, uint32_t symi, uint32_t stri)
-      : Parent(p)
-      , SymbolIndex(symi)
-      , StringIndex(stri) {}
+        : Parent(p), SymbolIndex(symi), StringIndex(stri) {}
 
-    bool operator ==(const Symbol &other) const {
+    bool operator==(const Symbol &other) const {
       return (Parent == other.Parent) && (SymbolIndex == other.SymbolIndex);
     }
 
@@ -218,7 +206,7 @@ public:
       return !(*this == other);
     }
 
-    symbol_iterator& operator++() {  // Preincrement
+    symbol_iterator &operator++() { // Preincrement
       symbol = symbol.getNext();
       return *this;
     }
@@ -227,14 +215,10 @@ public:
   Archive(MemoryBufferRef Source, Error &Err);
   static Expected<std::unique_ptr<Archive>> create(MemoryBufferRef Source);
 
-  enum Kind {
-    K_GNU,
-    K_GNU64,
-    K_BSD,
-    K_DARWIN,
-    K_DARWIN64,
-    K_COFF
-  };
+  /// Size field is 10 decimal digits long
+  static const uint64_t MaxMemberSize = 9999999999;
+
+  enum Kind { K_GNU, K_GNU64, K_BSD, K_DARWIN, K_DARWIN64, K_COFF };
 
   Kind kind() const { return (Kind)Format; }
   bool isThin() const { return IsThin; }
@@ -253,9 +237,7 @@ public:
   }
 
   // Cast methods.
-  static bool classof(Binary const *v) {
-    return v->isArchive();
-  }
+  static bool classof(Binary const *v) { return v->isArchive(); }
 
   // check if a symbol is in the archive
   Expected<Optional<Child>> findSym(StringRef name) const;

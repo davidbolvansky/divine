@@ -1,9 +1,8 @@
 //===- IVUsers.cpp - Induction Variable Users -------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -28,6 +27,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -101,12 +101,12 @@ static bool isSimplifiedLoopNest(BasicBlock *BB, const DominatorTree *DT,
     BasicBlock *DomBB = Rung->getBlock();
     Loop *DomLoop = LI->getLoopFor(DomBB);
     if (DomLoop && DomLoop->getHeader() == DomBB) {
-      // If the domtree walk reaches a loop with no preheader, return false.
-      if (!DomLoop->isLoopSimplifyForm())
-        return false;
       // If we have already checked this loop nest, stop checking.
       if (SimpleLoopNests.count(DomLoop))
         break;
+      // If the domtree walk reaches a loop with no preheader, return false.
+      if (!DomLoop->isLoopSimplifyForm())
+        return false;
       // If we have not already checked this loop nest, remember the loop
       // header nearest to BB. The nearest loop may not contain BB.
       if (!NearestLoop)

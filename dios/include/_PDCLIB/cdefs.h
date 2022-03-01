@@ -32,6 +32,8 @@
     #define _PDCLIB_C_VERSION 1999
 #elif __STDC_VERSION__ == 201112L
     #define _PDCLIB_C_VERSION 2011
+#elif __STDC_VERSION__ == 201710L
+    #define _PDCLIB_C_VERSION 2017
 #else
     #error Unsupported _ _STDC_VERSION_ _ (__STDC_VERSION__) (supported: ISO/IEC 9899:1990, 9899/AMD1:1995, 9899:1999, 9899:2011).
 #endif

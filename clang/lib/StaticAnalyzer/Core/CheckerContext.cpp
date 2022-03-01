@@ -1,9 +1,8 @@
 //== CheckerContext.cpp - Context info for path-sensitive checkers-----------=//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -20,6 +19,10 @@ using namespace clang;
 using namespace ento;
 
 const FunctionDecl *CheckerContext::getCalleeDecl(const CallExpr *CE) const {
+  const FunctionDecl *D = CE->getDirectCallee();
+  if (D)
+    return D;
+
   const Expr *Callee = CE->getCallee();
   SVal L = Pred->getSVal(Callee);
   return L.getAsFunctionDecl();
@@ -94,7 +97,7 @@ StringRef CheckerContext::getMacroNameOrSpelling(SourceLocation &Loc) {
   if (Loc.isMacroID())
     return Lexer::getImmediateMacroName(Loc, getSourceManager(),
                                              getLangOpts());
-  SmallVector<char, 16> buf;
+  SmallString<16> buf;
   return Lexer::getSpelling(Loc, buf, getSourceManager(), getLangOpts());
 }
 

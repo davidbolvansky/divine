@@ -78,7 +78,7 @@ struct Node
     void di_var( llvm::DIVariable *var )
     {
         _di_var = var;
-        _di_type = var->getType().resolve();
+        _di_type = var->getType();
     }
 
     void di_type( llvm::DIType *type )

@@ -3,6 +3,8 @@
 #include <errno.h>
 #include <sys/wait.h>
 
+#include <dios/sys/stdlibwrap.hpp>
+
 namespace __dios
 {
 

@@ -119,7 +119,8 @@ namespace lart::mcsema
 
             llvm::IRBuilder<> irb( ret );
             auto i8ptr = irb.CreateBitCast( ptr, i8PTy() );
-            irb.CreateCall( i8ptr );
+            auto fty = llvm::FunctionType::get( i8PTy(), false );
+            irb.CreateCall( fty, i8ptr );
 
         }
 
@@ -158,7 +159,7 @@ namespace lart::mcsema
 
             auto wrapper_t = llvm::FunctionType::get( ptr( type ), flattened, false );
             auto wrapper_fc = _m->getOrInsertFunction( next_name(), wrapper_t );
-            auto wrapper_f = llvm::dyn_cast< llvm::Function >( wrapper_fc );
+            auto wrapper_f = llvm::dyn_cast< llvm::Function >( wrapper_fc.getCallee() );
 
             auto entry = llvm::BasicBlock::Create( context, "entry" , wrapper_f );
 

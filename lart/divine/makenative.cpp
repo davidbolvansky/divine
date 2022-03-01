@@ -66,13 +66,13 @@ struct NativeStart {
 
         // create __native_start_rt declaration (will be provided by libnativert.so
         auto *nativeStartRT = llvm::cast< llvm::Function >(
-                m.getOrInsertFunction( "__native_start_rt", voidFunT ) );
+                m.getOrInsertFunction( "__native_start_rt", voidFunT ).getCallee() );
 
         // create __native_start which invokes __native_start_rt
         // __native_start_rt cannot be directly invoked from ASM since it is
         // dynamically loaded
         auto *nativeStart = llvm::cast< llvm::Function >(
-                m.getOrInsertFunction( "__native_start", voidFunT ) );
+                m.getOrInsertFunction( "__native_start", voidFunT ).getCallee() );
         auto *bb = llvm::BasicBlock::Create( m.getContext(), "entry", nativeStart );
         llvm::IRBuilder<> irb( bb );
         irb.CreateCall( nativeStartRT );

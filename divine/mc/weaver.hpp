@@ -18,6 +18,7 @@
 
 #pragma once
 #include <deque>
+#include <atomic>
 #include <brick-cons>
 
 namespace divine::mc::task
@@ -403,7 +404,7 @@ namespace divine::mc
 
         void run() /* TODO parallel */
         {
-            auto process = [&]( auto t )
+            auto process = [&]( auto &t )
             {
                 int i = 0;
 

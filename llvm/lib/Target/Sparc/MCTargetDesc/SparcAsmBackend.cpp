@@ -1,9 +1,8 @@
 //===-- SparcAsmBackend.cpp - Sparc Assembler Backend ---------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,6 +15,7 @@
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCValue.h"
+#include "llvm/Support/EndianStream.h"
 #include "llvm/Support/TargetRegistry.h"
 
 using namespace llvm;
@@ -52,6 +52,7 @@ static unsigned adjustFixupValue(unsigned Kind, uint64_t Value) {
   case Sparc::fixup_sparc_tls_ldm_hi22:
   case Sparc::fixup_sparc_tls_ie_hi22:
   case Sparc::fixup_sparc_hi22:
+  case Sparc::fixup_sparc_lm:
     return (Value >> 10) & 0x3fffff;
 
   case Sparc::fixup_sparc_got13:
@@ -100,6 +101,20 @@ static unsigned adjustFixupValue(unsigned Kind, uint64_t Value) {
   }
 }
 
+/// getFixupKindNumBytes - The number of bytes the fixup may change.
+static unsigned getFixupKindNumBytes(unsigned Kind) {
+    switch (Kind) {
+  default:
+    return 4;
+  case FK_Data_1:
+    return 1;
+  case FK_Data_2:
+    return 2;
+  case FK_Data_8:
+    return 8;
+  }
+}
+
 namespace {
   class SparcAsmBackend : public MCAsmBackend {
   protected:
@@ -132,6 +147,7 @@ namespace {
         { "fixup_sparc_l44",       20,     12,  0 },
         { "fixup_sparc_hh",        10,     22,  0 },
         { "fixup_sparc_hm",        22,     10,  0 },
+        { "fixup_sparc_lm",        10,     22,  0 },
         { "fixup_sparc_pc22",      10,     22,  MCFixupKindInfo::FKF_IsPCRel },
         { "fixup_sparc_pc10",      22,     10,  MCFixupKindInfo::FKF_IsPCRel },
         { "fixup_sparc_got22",     10,     22,  0 },
@@ -173,6 +189,7 @@ namespace {
         { "fixup_sparc_l44",        0,     12,  0 },
         { "fixup_sparc_hh",         0,     22,  0 },
         { "fixup_sparc_hm",         0,     10,  0 },
+        { "fixup_sparc_lm",         0,     22,  0 },
         { "fixup_sparc_pc22",       0,     22,  MCFixupKindInfo::FKF_IsPCRel },
         { "fixup_sparc_pc10",       0,     10,  MCFixupKindInfo::FKF_IsPCRel },
         { "fixup_sparc_got22",      0,     22,  0 },
@@ -241,12 +258,6 @@ namespace {
       }
     }
 
-    bool mayNeedRelaxation(const MCInst &Inst,
-                           const MCSubtargetInfo &STI) const override {
-      // FIXME.
-      return false;
-    }
-
     /// fixupNeedsRelaxation - Target specific predicate for whether a given
     /// fixup requires the associated instruction to be relaxed.
     bool fixupNeedsRelaxation(const MCFixup &Fixup,
@@ -257,8 +268,8 @@ namespace {
       llvm_unreachable("fixupNeedsRelaxation() unimplemented");
       return false;
     }
-    void relaxInstruction(const MCInst &Inst, const MCSubtargetInfo &STI,
-                          MCInst &Res) const override {
+    void relaxInstruction(MCInst &Inst,
+                          const MCSubtargetInfo &STI) const override {
       // FIXME.
       llvm_unreachable("relaxInstruction() unimplemented");
     }
@@ -290,13 +301,13 @@ namespace {
       Value = adjustFixupValue(Fixup.getKind(), Value);
       if (!Value) return;           // Doesn't change encoding.
 
+      unsigned NumBytes = getFixupKindNumBytes(Fixup.getKind());
       unsigned Offset = Fixup.getOffset();
-
       // For each byte of the fragment that the fixup touches, mask in the bits
       // from the fixup value. The Value has been "split up" into the
       // appropriate bitfields above.
-      for (unsigned i = 0; i != 4; ++i) {
-        unsigned Idx = Endian == support::little ? i : 3 - i;
+      for (unsigned i = 0; i != NumBytes; ++i) {
+        unsigned Idx = Endian == support::little ? i : (NumBytes - 1) - i;
         Data[Offset + Idx] |= uint8_t((Value >> (i * 8)) & 0xff);
       }
     }

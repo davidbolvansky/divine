@@ -57,7 +57,13 @@ target_link_libraries( divcheck divine-ui divine-rt )
 
 if( NOT WIN32 )
   target_link_libraries( divine pthread )
+  target_link_libraries( divine atomic )
   target_link_libraries( divcheck pthread )
+
+  # todo: target_link_libraries( divcc atomic )
+  target_link_libraries( dioscc atomic )
+  target_link_libraries( shoop atomic )
+  target_link_libraries( divcheck atomic )
 endif( NOT WIN32 )
 
 if( OPT_TBBMALLOC )

@@ -1,9 +1,8 @@
 //===- BasicAliasAnalysis.h - Stateless, local Alias Analysis ---*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 /// \file
@@ -19,9 +18,6 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/AssumptionCache.h"
-#include "llvm/Analysis/MemoryLocation.h"
-#include "llvm/IR/CallSite.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Pass.h"
 #include <algorithm>
@@ -39,7 +35,6 @@ class DataLayout;
 class DominatorTree;
 class Function;
 class GEPOperator;
-class LoopInfo;
 class PHINode;
 class SelectInst;
 class TargetLibraryInfo;
@@ -60,42 +55,43 @@ class BasicAAResult : public AAResultBase<BasicAAResult> {
   const TargetLibraryInfo &TLI;
   AssumptionCache &AC;
   DominatorTree *DT;
-  LoopInfo *LI;
   PhiValues *PV;
 
 public:
   BasicAAResult(const DataLayout &DL, const Function &F,
                 const TargetLibraryInfo &TLI, AssumptionCache &AC,
-                DominatorTree *DT = nullptr, LoopInfo *LI = nullptr,
-                PhiValues *PV = nullptr)
-      : AAResultBase(), DL(DL), F(F), TLI(TLI), AC(AC), DT(DT), LI(LI), PV(PV)
-        {}
+                DominatorTree *DT = nullptr, PhiValues *PV = nullptr)
+      : AAResultBase(), DL(DL), F(F), TLI(TLI), AC(AC), DT(DT), PV(PV) {}
 
   BasicAAResult(const BasicAAResult &Arg)
       : AAResultBase(Arg), DL(Arg.DL), F(Arg.F), TLI(Arg.TLI), AC(Arg.AC),
-        DT(Arg.DT),  LI(Arg.LI), PV(Arg.PV) {}
+        DT(Arg.DT), PV(Arg.PV) {}
   BasicAAResult(BasicAAResult &&Arg)
       : AAResultBase(std::move(Arg)), DL(Arg.DL), F(Arg.F), TLI(Arg.TLI),
-        AC(Arg.AC), DT(Arg.DT), LI(Arg.LI), PV(Arg.PV) {}
+        AC(Arg.AC), DT(Arg.DT), PV(Arg.PV) {}
 
   /// Handle invalidation events in the new pass manager.
   bool invalidate(Function &Fn, const PreservedAnalyses &PA,
                   FunctionAnalysisManager::Invalidator &Inv);
 
-  AliasResult alias(const MemoryLocation &LocA, const MemoryLocation &LocB);
+  AliasResult alias(const MemoryLocation &LocA, const MemoryLocation &LocB,
+                    AAQueryInfo &AAQI);
 
-  ModRefInfo getModRefInfo(ImmutableCallSite CS, const MemoryLocation &Loc);
+  ModRefInfo getModRefInfo(const CallBase *Call, const MemoryLocation &Loc,
+                           AAQueryInfo &AAQI);
 
-  ModRefInfo getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2);
+  ModRefInfo getModRefInfo(const CallBase *Call1, const CallBase *Call2,
+                           AAQueryInfo &AAQI);
 
   /// Chases pointers until we find a (constant global) or not.
-  bool pointsToConstantMemory(const MemoryLocation &Loc, bool OrLocal);
+  bool pointsToConstantMemory(const MemoryLocation &Loc, AAQueryInfo &AAQI,
+                              bool OrLocal);
 
   /// Get the location associated with a pointer argument of a callsite.
-  ModRefInfo getArgModRefInfo(ImmutableCallSite CS, unsigned ArgIdx);
+  ModRefInfo getArgModRefInfo(const CallBase *Call, unsigned ArgIdx);
 
   /// Returns the behavior when calling the given call site.
-  FunctionModRefBehavior getModRefBehavior(ImmutableCallSite CS);
+  FunctionModRefBehavior getModRefBehavior(const CallBase *Call);
 
   /// Returns the behavior when calling the given function. For use when the
   /// call site is not known.
@@ -115,15 +111,23 @@ private:
     unsigned ZExtBits;
     unsigned SExtBits;
 
-    int64_t Scale;
+    APInt Scale;
 
-    bool operator==(const VariableGEPIndex &Other) const {
-      return V == Other.V && ZExtBits == Other.ZExtBits &&
-             SExtBits == Other.SExtBits && Scale == Other.Scale;
+    // Context instruction to use when querying information about this index.
+    const Instruction *CxtI;
+
+    /// True if all operations in this expression are NSW.
+    bool IsNSW;
+
+    void dump() const {
+      print(dbgs());
+      dbgs() << "\n";
     }
-
-    bool operator!=(const VariableGEPIndex &Other) const {
-      return !operator==(Other);
+    void print(raw_ostream &OS) const {
+      OS << "(V=" << V->getName()
+	 << ", zextbits=" << ZExtBits
+	 << ", sextbits=" << SExtBits
+	 << ", scale=" << Scale << ")";
     }
   };
 
@@ -132,19 +136,33 @@ private:
   struct DecomposedGEP {
     // Base pointer of the GEP
     const Value *Base;
-    // Total constant offset w.r.t the base from indexing into structs
-    int64_t StructOffset;
-    // Total constant offset w.r.t the base from indexing through
-    // pointers/arrays/vectors
-    int64_t OtherOffset;
+    // Total constant offset from base.
+    APInt Offset;
     // Scaled variable (non-constant) indices.
     SmallVector<VariableGEPIndex, 4> VarIndices;
-  };
+    // Is GEP index scale compile-time constant.
+    bool HasCompileTimeConstantScale;
+    // Are all operations inbounds GEPs or non-indexing operations?
+    // (None iff expression doesn't involve any geps)
+    Optional<bool> InBounds;
 
-  /// Track alias queries to guard against recursion.
-  using LocPair = std::pair<MemoryLocation, MemoryLocation>;
-  using AliasCacheTy = SmallDenseMap<LocPair, AliasResult, 8>;
-  AliasCacheTy AliasCache;
+    void dump() const {
+      print(dbgs());
+      dbgs() << "\n";
+    }
+    void print(raw_ostream &OS) const {
+      OS << "(DecomposedGEP Base=" << Base->getName()
+         << ", Offset=" << Offset
+         << ", VarIndices=[";
+      for (size_t i = 0; i < VarIndices.size(); i++) {
+        if (i != 0)
+          OS << ", ";
+        VarIndices[i].print(OS);
+      }
+      OS << "], HasCompileTimeConstantScale=" << HasCompileTimeConstantScale
+         << ")";
+    }
+  };
 
   /// Tracks phi nodes we have visited.
   ///
@@ -165,14 +183,9 @@ private:
   /// Tracks instructions visited by pointsToConstantMemory.
   SmallPtrSet<const Value *, 16> Visited;
 
-  static const Value *
-  GetLinearExpression(const Value *V, APInt &Scale, APInt &Offset,
-                      unsigned &ZExtBits, unsigned &SExtBits,
-                      const DataLayout &DL, unsigned Depth, AssumptionCache *AC,
-                      DominatorTree *DT, bool &NSW, bool &NUW);
-
-  static bool DecomposeGEPExpression(const Value *V, DecomposedGEP &Decomposed,
-      const DataLayout &DL, AssumptionCache *AC, DominatorTree *DT);
+  static DecomposedGEP
+  DecomposeGEPExpression(const Value *V, const DataLayout &DL,
+                         AssumptionCache *AC, DominatorTree *DT);
 
   static bool isGEPBaseAtNegativeOffset(const GEPOperator *GEPOp,
       const DecomposedGEP &DecompGEP, const DecomposedGEP &DecompObject,
@@ -189,7 +202,7 @@ private:
   bool
   constantOffsetHeuristic(const SmallVectorImpl<VariableGEPIndex> &VarIndices,
                           LocationSize V1Size, LocationSize V2Size,
-                          int64_t BaseOffset, AssumptionCache *AC,
+                          const APInt &BaseOffset, AssumptionCache *AC,
                           DominatorTree *DT);
 
   bool isValueEqualInPotentialCycles(const Value *V1, const Value *V2);
@@ -198,24 +211,25 @@ private:
                           const SmallVectorImpl<VariableGEPIndex> &Src);
 
   AliasResult aliasGEP(const GEPOperator *V1, LocationSize V1Size,
-                       const AAMDNodes &V1AAInfo, const Value *V2,
-                       LocationSize V2Size, const AAMDNodes &V2AAInfo,
-                       const Value *UnderlyingV1, const Value *UnderlyingV2);
+                       const Value *V2, LocationSize V2Size,
+                       const Value *UnderlyingV1, const Value *UnderlyingV2,
+                       AAQueryInfo &AAQI);
 
   AliasResult aliasPHI(const PHINode *PN, LocationSize PNSize,
-                       const AAMDNodes &PNAAInfo, const Value *V2,
-                       LocationSize V2Size, const AAMDNodes &V2AAInfo,
-                       const Value *UnderV2);
+                       const Value *V2, LocationSize V2Size, AAQueryInfo &AAQI);
 
   AliasResult aliasSelect(const SelectInst *SI, LocationSize SISize,
-                          const AAMDNodes &SIAAInfo, const Value *V2,
-                          LocationSize V2Size, const AAMDNodes &V2AAInfo,
-                          const Value *UnderV2);
+                          const Value *V2, LocationSize V2Size,
+                          AAQueryInfo &AAQI);
 
   AliasResult aliasCheck(const Value *V1, LocationSize V1Size,
-                         AAMDNodes V1AATag, const Value *V2,
-                         LocationSize V2Size, AAMDNodes V2AATag,
-                         const Value *O1 = nullptr, const Value *O2 = nullptr);
+                         const Value *V2, LocationSize V2Size,
+                         AAQueryInfo &AAQI);
+
+  AliasResult aliasCheckRecursive(const Value *V1, LocationSize V1Size,
+                                  const Value *V2, LocationSize V2Size,
+                                  AAQueryInfo &AAQI, const Value *O1,
+                                  const Value *O2);
 };
 
 /// Analysis pass providing a never-invalidated alias analysis result.

@@ -32,6 +32,7 @@
 DIVINE_RELAX_WARNINGS
 #endif
 
+#include "llvm/ADT/fallible_iterator.h"
 #include <llvm/Linker/Linker.h>
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
@@ -125,7 +126,6 @@ inline void writeArchive( It begin, It end, std::string out )
 
         // Create a new archive member
         members.emplace_back( ::llvm::MemoryBufferRef( bc.first, bc.second ) );
-        members.back().IsNew = true;
     }
 
     // Write into 'out'
@@ -409,12 +409,12 @@ struct Linker
 
     static std::string modname( Module *const *m )
     {
-        return (*m)->getName();
+        return (*m)->getName().str();
     }
 
     static std::string modname( ArchiveReader::BitcodeIterator it )
     {
-        return it.borrow()->getName();
+        return it.borrow()->getName().str();
     }
 
     // A map associating symbol names with modules they are defined in
@@ -428,7 +428,7 @@ struct Linker
         {
             for ( auto u : undef )
             {
-                auto it = this->find( u );
+                auto it = this->find( u.str() );
                 if ( it != this->end() )
                 {
                     TRACE( "pulling in", modname( it->second ), "for", u.str() );
@@ -467,7 +467,8 @@ struct Linker
                     _throwLLVMError( e );
                 }
 
-                Archive::child_iterator iter( m.get(), nullptr );
+                ::llvm::Error Err = ::llvm::Error::success();
+                Archive::child_iterator iter = Archive::child_iterator::itr( m.get(), Err );
                 this->emplace( s.getName(), r.iterator( iter ) );
             }
         }
@@ -600,7 +601,7 @@ struct LinkerTest {
 
     Function *declareFun( Module &m, StringRef name ) {
         auto *fun = cast< Function >( m.getOrInsertFunction( name,
-                        FunctionType::get( Type::getInt32Ty( *ctx ), false ) ) );
+                        FunctionType::get( Type::getInt32Ty( *ctx ), false ) ).getCallee() );
         ASSERT( fun->isDeclaration() );
         return fun;
     }

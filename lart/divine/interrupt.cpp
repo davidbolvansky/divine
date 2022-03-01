@@ -90,8 +90,8 @@ struct CflInterrupt
         auto hyper = m.getOrInsertFunction( "__vm_test_loop", hyper_t );
         auto handler = m.getOrInsertFunction( _handler_name, handler_t );
 
-        _hypercall = llvm::cast< llvm::Function >( hyper );
-        _handler = llvm::cast< llvm::Function >( handler );
+        _hypercall = llvm::cast< llvm::Function >( hyper.getCallee() );
+        _handler = llvm::cast< llvm::Function >( handler.getCallee() );
 
         ASSERT( _hypercall );
         ASSERT( _handler );
@@ -180,8 +180,8 @@ struct MemInterrupt
         auto hyper = m.getOrInsertFunction( "__vm_test_crit", hyper_t );
         auto handler = m.getOrInsertFunction( _handler_name, handler_t );
 
-        _hypercall = llvm::cast< llvm::Function >( hyper );
-        _handler = llvm::cast< llvm::Function >( handler );
+        _hypercall = llvm::cast< llvm::Function >( hyper.getCallee() );
+        _handler = llvm::cast< llvm::Function >( handler.getCallee() );
 
         ASSERT( _hypercall );
         ASSERT( _handler );

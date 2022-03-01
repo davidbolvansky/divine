@@ -88,7 +88,7 @@ struct Slot : _VM_Operand, _VM_OperandExt
     Slot &operator=( const Slot & ) & = default;
 
     template< typename stream >
-    friend auto operator<<( stream &o, Slot p ) -> decltype( o << "" )
+    friend auto operator<<( stream &o, Slot p ) -> decltype( o << std::string() )
     {
         static std::vector< std::string > t =
             { "i1", "i8", "i16", "i32", "i64", "f32", "f64", "f80",

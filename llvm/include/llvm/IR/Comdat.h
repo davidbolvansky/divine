@@ -1,9 +1,8 @@
 //===- llvm/IR/Comdat.h - Comdat definitions --------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -32,11 +31,11 @@ template <typename ValueTy> class StringMapEntry;
 class Comdat {
 public:
   enum SelectionKind {
-    Any,          ///< The linker may choose any COMDAT.
-    ExactMatch,   ///< The data referenced by the COMDAT must be the same.
-    Largest,      ///< The linker will choose the largest COMDAT.
-    NoDuplicates, ///< No other Module may specify this COMDAT.
-    SameSize,     ///< The data referenced by the COMDAT must be the same size.
+    Any,           ///< The linker may choose any COMDAT.
+    ExactMatch,    ///< The data referenced by the COMDAT must be the same.
+    Largest,       ///< The linker will choose the largest COMDAT.
+    NoDeduplicate, ///< No deduplication is performed.
+    SameSize,      ///< The data referenced by the COMDAT must be the same size.
   };
 
   Comdat(const Comdat &) = delete;

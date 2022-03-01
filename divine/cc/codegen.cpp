@@ -88,7 +88,7 @@ namespace divine::cc
         m.setTargetTriple( TargetTriple );
 
         std::error_code EC;
-        raw_fd_ostream dest( filename, EC, sys::fs::F_None );
+        raw_fd_ostream dest( filename, EC, sys::fs::OF_None );
 
         if ( EC )
         {
@@ -99,7 +99,7 @@ namespace divine::cc
         PM_BC PM;
 
         if ( tmach->addPassesToEmitFile( PM, dest, nullptr,
-                                         TargetMachine::CGFT_ObjectFile, false ) )
+                                         CodeGenFileType::CGFT_ObjectFile, false ) )
         {
             errs() << "TargetMachine can't emit a file of this type\n";
             return 1;
@@ -110,7 +110,7 @@ namespace divine::cc
         AsmStreamer->SwitchSection( AsmStreamer->getContext().getELFSection( llvm_section_name,
                                                                              ELF::SHT_NOTE, 0 ) );
         std::string bytes = brick::llvm::getModuleBytes( &m );
-        AsmStreamer->EmitBytes( bytes );
+        AsmStreamer->emitBytes( bytes );
 
         PM.run( m );
         dest.flush();

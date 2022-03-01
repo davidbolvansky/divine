@@ -88,9 +88,9 @@ static std::string source( dbg::Info &dbg, llvm::DISubprogram *di, Program &prog
 {
     brq::string_builder out;
 
-    std::string src( rt::source( di->getFilename() ) );
+    std::string src( rt::source( di->getFilename().str() ) );
     if ( src.empty() )
-        src = brq::read_file( di->getFilename() );
+        src = brq::read_file( di->getFilename().str() );
 
     auto split_src = brq::splitter( src, '\n' );
     auto line = split_src.begin();

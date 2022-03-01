@@ -10,6 +10,8 @@
 #ifndef _LIBCPP_TYPE_TRAITS
 #define _LIBCPP_TYPE_TRAITS
 
+#include <__config>
+
 /*
     type_traits synopsis
 

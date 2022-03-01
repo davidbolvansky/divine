@@ -1,9 +1,8 @@
 //===- AMDGPUAnnotateKernelFeaturesPass.cpp -------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -13,28 +12,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "AMDGPU.h"
-#include "AMDGPUSubtarget.h"
-#include "Utils/AMDGPUBaseInfo.h"
-#include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Triple.h"
+#include "GCNSubtarget.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/CallGraphSCCPass.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
-#include "llvm/IR/CallSite.h"
-#include "llvm/IR/Constant.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/Function.h"
-#include "llvm/IR/Instruction.h"
-#include "llvm/IR/Instructions.h"
-#include "llvm/IR/Intrinsics.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/Type.h"
-#include "llvm/IR/Use.h"
-#include "llvm/Pass.h"
-#include "llvm/Support/Casting.h"
-#include "llvm/Support/ErrorHandling.h"
+#include "llvm/IR/IntrinsicsAMDGPU.h"
+#include "llvm/IR/IntrinsicsR600.h"
 #include "llvm/Target/TargetMachine.h"
 
 #define DEBUG_TYPE "amdgpu-annotate-kernel-features"
@@ -42,13 +25,22 @@
 using namespace llvm;
 
 namespace {
+static constexpr StringLiteral ImplicitAttrNames[] = {
+    // X ids unnecessarily propagated to kernels.
+    "amdgpu-work-item-id-x",  "amdgpu-work-item-id-y",
+    "amdgpu-work-item-id-z",  "amdgpu-work-group-id-x",
+    "amdgpu-work-group-id-y", "amdgpu-work-group-id-z",
+    "amdgpu-dispatch-ptr",    "amdgpu-dispatch-id",
+    "amdgpu-queue-ptr",       "amdgpu-implicitarg-ptr"};
 
 class AMDGPUAnnotateKernelFeatures : public CallGraphSCCPass {
 private:
   const TargetMachine *TM = nullptr;
-  AMDGPUAS AS;
+  SmallVector<CallGraphNode*, 8> NodeList;
 
   bool addFeatureAttributes(Function &F);
+  bool processUniformWorkGroupAttribute();
+  bool propagateUniformWorkGroupAttribute(Function &Caller, Function &Callee);
 
 public:
   static char ID;
@@ -67,11 +59,11 @@ public:
     CallGraphSCCPass::getAnalysisUsage(AU);
   }
 
-  static bool visitConstantExpr(const ConstantExpr *CE, AMDGPUAS AS);
+  static bool visitConstantExpr(const ConstantExpr *CE);
   static bool visitConstantExprsRecursively(
     const Constant *EntryC,
-    SmallPtrSet<const Constant *, 8> &ConstantExprVisited,
-    AMDGPUAS AS);
+    SmallPtrSet<const Constant *, 8> &ConstantExprVisited, bool IsFunc,
+    bool HasApertureRegs);
 };
 
 } // end anonymous namespace
@@ -85,20 +77,26 @@ INITIALIZE_PASS(AMDGPUAnnotateKernelFeatures, DEBUG_TYPE,
 
 
 // The queue ptr is only needed when casting to flat, not from it.
-static bool castRequiresQueuePtr(unsigned SrcAS, const AMDGPUAS &AS) {
-  return SrcAS == AS.LOCAL_ADDRESS || SrcAS == AS.PRIVATE_ADDRESS;
+static bool castRequiresQueuePtr(unsigned SrcAS) {
+  return SrcAS == AMDGPUAS::LOCAL_ADDRESS || SrcAS == AMDGPUAS::PRIVATE_ADDRESS;
 }
 
-static bool castRequiresQueuePtr(const AddrSpaceCastInst *ASC,
-    const AMDGPUAS &AS) {
-  return castRequiresQueuePtr(ASC->getSrcAddressSpace(), AS);
+static bool castRequiresQueuePtr(const AddrSpaceCastInst *ASC) {
+  return castRequiresQueuePtr(ASC->getSrcAddressSpace());
 }
 
-bool AMDGPUAnnotateKernelFeatures::visitConstantExpr(const ConstantExpr *CE,
-    AMDGPUAS AS) {
+static bool isDSAddress(const Constant *C) {
+  const GlobalValue *GV = dyn_cast<GlobalValue>(C);
+  if (!GV)
+    return false;
+  unsigned AS = GV->getAddressSpace();
+  return AS == AMDGPUAS::LOCAL_ADDRESS || AS == AMDGPUAS::REGION_ADDRESS;
+}
+
+bool AMDGPUAnnotateKernelFeatures::visitConstantExpr(const ConstantExpr *CE) {
   if (CE->getOpcode() == Instruction::AddrSpaceCast) {
     unsigned SrcAS = CE->getOperand(0)->getType()->getPointerAddressSpace();
-    return castRequiresQueuePtr(SrcAS, AS);
+    return castRequiresQueuePtr(SrcAS);
   }
 
   return false;
@@ -107,7 +105,7 @@ bool AMDGPUAnnotateKernelFeatures::visitConstantExpr(const ConstantExpr *CE,
 bool AMDGPUAnnotateKernelFeatures::visitConstantExprsRecursively(
   const Constant *EntryC,
   SmallPtrSet<const Constant *, 8> &ConstantExprVisited,
-  AMDGPUAS AS) {
+  bool IsFunc, bool HasApertureRegs) {
 
   if (!ConstantExprVisited.insert(EntryC).second)
     return false;
@@ -118,9 +116,13 @@ bool AMDGPUAnnotateKernelFeatures::visitConstantExprsRecursively(
   while (!Stack.empty()) {
     const Constant *C = Stack.pop_back_val();
 
+    // We need to trap on DS globals in non-entry functions.
+    if (IsFunc && isDSAddress(C))
+      return true;
+
     // Check this constant expression.
     if (const auto *CE = dyn_cast<ConstantExpr>(C)) {
-      if (visitConstantExpr(CE, AS))
+      if (!HasApertureRegs && visitConstantExpr(CE))
         return true;
     }
 
@@ -176,6 +178,9 @@ static StringRef intrinsicToAttrName(Intrinsic::ID ID,
   case Intrinsic::amdgcn_implicitarg_ptr:
     return "amdgpu-implicitarg-ptr";
   case Intrinsic::amdgcn_queue_ptr:
+  case Intrinsic::amdgcn_is_shared:
+  case Intrinsic::amdgcn_is_private:
+    // TODO: Does not require queue ptr on gfx9+
   case Intrinsic::trap:
   case Intrinsic::debugtrap:
     IsQueuePtr = true;
@@ -191,54 +196,109 @@ static bool handleAttr(Function &Parent, const Function &Callee,
     Parent.addFnAttr(Name);
     return true;
   }
-
   return false;
 }
 
 static void copyFeaturesToFunction(Function &Parent, const Function &Callee,
                                    bool &NeedQueuePtr) {
-  // X ids unnecessarily propagated to kernels.
-  static const StringRef AttrNames[] = {
-    { "amdgpu-work-item-id-x" },
-    { "amdgpu-work-item-id-y" },
-    { "amdgpu-work-item-id-z" },
-    { "amdgpu-work-group-id-x" },
-    { "amdgpu-work-group-id-y" },
-    { "amdgpu-work-group-id-z" },
-    { "amdgpu-dispatch-ptr" },
-    { "amdgpu-dispatch-id" },
-    { "amdgpu-kernarg-segment-ptr" },
-    { "amdgpu-implicitarg-ptr" }
-  };
-
   if (handleAttr(Parent, Callee, "amdgpu-queue-ptr"))
     NeedQueuePtr = true;
 
-  for (StringRef AttrName : AttrNames)
+  for (StringRef AttrName : ImplicitAttrNames)
     handleAttr(Parent, Callee, AttrName);
+}
+
+bool AMDGPUAnnotateKernelFeatures::processUniformWorkGroupAttribute() {
+  bool Changed = false;
+
+  for (auto *Node : reverse(NodeList)) {
+    Function *Caller = Node->getFunction();
+
+    for (auto I : *Node) {
+      Function *Callee = std::get<1>(I)->getFunction();
+      if (Callee)
+        Changed = propagateUniformWorkGroupAttribute(*Caller, *Callee);
+    }
+  }
+
+  return Changed;
+}
+
+bool AMDGPUAnnotateKernelFeatures::propagateUniformWorkGroupAttribute(
+       Function &Caller, Function &Callee) {
+
+  // Check for externally defined function
+  if (!Callee.hasExactDefinition()) {
+    Callee.addFnAttr("uniform-work-group-size", "false");
+    if (!Caller.hasFnAttribute("uniform-work-group-size"))
+      Caller.addFnAttr("uniform-work-group-size", "false");
+
+    return true;
+  }
+  // Check if the Caller has the attribute
+  if (Caller.hasFnAttribute("uniform-work-group-size")) {
+    // Check if the value of the attribute is true
+    if (Caller.getFnAttribute("uniform-work-group-size")
+        .getValueAsString().equals("true")) {
+      // Propagate the attribute to the Callee, if it does not have it
+      if (!Callee.hasFnAttribute("uniform-work-group-size")) {
+        Callee.addFnAttr("uniform-work-group-size", "true");
+        return true;
+      }
+    } else {
+      Callee.addFnAttr("uniform-work-group-size", "false");
+      return true;
+    }
+  } else {
+    // If the attribute is absent, set it as false
+    Caller.addFnAttr("uniform-work-group-size", "false");
+    Callee.addFnAttr("uniform-work-group-size", "false");
+    return true;
+  }
+  return false;
 }
 
 bool AMDGPUAnnotateKernelFeatures::addFeatureAttributes(Function &F) {
   const GCNSubtarget &ST = TM->getSubtarget<GCNSubtarget>(F);
-  bool HasFlat = ST.hasFlatAddressSpace();
   bool HasApertureRegs = ST.hasApertureRegs();
   SmallPtrSet<const Constant *, 8> ConstantExprVisited;
 
+  bool HaveStackObjects = false;
   bool Changed = false;
   bool NeedQueuePtr = false;
   bool HaveCall = false;
+  bool HasIndirectCall = false;
   bool IsFunc = !AMDGPU::isEntryFunctionCC(F.getCallingConv());
+  CallingConv::ID CC = F.getCallingConv();
+  bool CallingConvSupportsAllImplicits = (CC != CallingConv::AMDGPU_Gfx);
+
+  // If this function hasAddressTaken() = true
+  // then add all attributes corresponding to the implicit args.
+  if (CallingConvSupportsAllImplicits &&
+      F.hasAddressTaken(nullptr, true, true, true)) {
+    for (StringRef AttrName : ImplicitAttrNames) {
+      F.addFnAttr(AttrName);
+    }
+    Changed = true;
+  }
 
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
-      CallSite CS(&I);
-      if (CS) {
-        Function *Callee = CS.getCalledFunction();
+      if (isa<AllocaInst>(I)) {
+        HaveStackObjects = true;
+        continue;
+      }
 
-        // TODO: Do something with indirect calls.
+      if (auto *CB = dyn_cast<CallBase>(&I)) {
+        const Function *Callee =
+            dyn_cast<Function>(CB->getCalledOperand()->stripPointerCasts());
+
+        // Note the occurence of indirect call.
         if (!Callee) {
-          if (!CS.isInlineAsm())
+          if (!CB->isInlineAsm()) {
+            HasIndirectCall = true;
             HaveCall = true;
+          }
           continue;
         }
 
@@ -249,20 +309,25 @@ bool AMDGPUAnnotateKernelFeatures::addFeatureAttributes(Function &F) {
           Changed = true;
         } else {
           bool NonKernelOnly = false;
-          StringRef AttrName = intrinsicToAttrName(IID,
-                                                   NonKernelOnly, NeedQueuePtr);
-          if (!AttrName.empty() && (IsFunc || !NonKernelOnly)) {
-            F.addFnAttr(AttrName);
-            Changed = true;
+
+          if (!IsFunc && IID == Intrinsic::amdgcn_kernarg_segment_ptr) {
+            F.addFnAttr("amdgpu-kernarg-segment-ptr");
+          } else {
+            StringRef AttrName = intrinsicToAttrName(IID, NonKernelOnly,
+                                                     NeedQueuePtr);
+            if (!AttrName.empty() && (IsFunc || !NonKernelOnly)) {
+              F.addFnAttr(AttrName);
+              Changed = true;
+            }
           }
         }
       }
 
-      if (NeedQueuePtr || HasApertureRegs)
+      if (NeedQueuePtr || (!IsFunc && HasApertureRegs))
         continue;
 
       if (const AddrSpaceCastInst *ASC = dyn_cast<AddrSpaceCastInst>(&I)) {
-        if (castRequiresQueuePtr(ASC, AS)) {
+        if (!HasApertureRegs && castRequiresQueuePtr(ASC)) {
           NeedQueuePtr = true;
           continue;
         }
@@ -273,7 +338,8 @@ bool AMDGPUAnnotateKernelFeatures::addFeatureAttributes(Function &F) {
         if (!OpC)
           continue;
 
-        if (visitConstantExprsRecursively(OpC, ConstantExprVisited, AS)) {
+        if (visitConstantExprsRecursively(OpC, ConstantExprVisited, IsFunc,
+                                          HasApertureRegs)) {
           NeedQueuePtr = true;
           break;
         }
@@ -289,8 +355,35 @@ bool AMDGPUAnnotateKernelFeatures::addFeatureAttributes(Function &F) {
   // TODO: We could refine this to captured pointers that could possibly be
   // accessed by flat instructions. For now this is mostly a poor way of
   // estimating whether there are calls before argument lowering.
-  if (HasFlat && !IsFunc && HaveCall) {
-    F.addFnAttr("amdgpu-flat-scratch");
+  if (!IsFunc && HaveCall) {
+    F.addFnAttr("amdgpu-calls");
+    Changed = true;
+  }
+
+  if (HaveStackObjects) {
+    F.addFnAttr("amdgpu-stack-objects");
+    Changed = true;
+  }
+
+  // This pass cannot copy attributes from callees to callers
+  // if there is an indirect call and in thus such cases,
+  // hasAddressTaken() would be false for kernels and functions
+  // making an indirect call (if they are themselves not indirectly called).
+  // We must tag all such kernels/functions with all implicits attributes
+  // for correctness.
+  // e.g.
+  // 1. Kernel K1 makes an indirect call to function F1.
+  //    Without detecting an indirect call in K1, this pass will not
+  //    add all implicit args to K1 (which is incorrect).
+  // 2. Kernel K1 makes direct call to F1 which makes indirect call to function
+  // F2.
+  //    Without detecting an indirect call in F1 (whose hasAddressTaken() is
+  //    false), the pass will not add all implicit args to F1 (which is
+  //    essential for correctness).
+  if (CallingConvSupportsAllImplicits && HasIndirectCall) {
+    for (StringRef AttrName : ImplicitAttrNames) {
+      F.addFnAttr(AttrName);
+    }
     Changed = true;
   }
 
@@ -298,15 +391,23 @@ bool AMDGPUAnnotateKernelFeatures::addFeatureAttributes(Function &F) {
 }
 
 bool AMDGPUAnnotateKernelFeatures::runOnSCC(CallGraphSCC &SCC) {
-  Module &M = SCC.getCallGraph().getModule();
-  Triple TT(M.getTargetTriple());
-
   bool Changed = false;
-  for (CallGraphNode *I : SCC) {
-    Function *F = I->getFunction();
-    if (!F || F->isDeclaration())
-      continue;
 
+  for (CallGraphNode *I : SCC) {
+    // Build a list of CallGraphNodes from most number of uses to least
+    if (I->getNumReferences())
+      NodeList.push_back(I);
+    else {
+      processUniformWorkGroupAttribute();
+      NodeList.clear();
+    }
+
+    Function *F = I->getFunction();
+    // Ignore functions with graphics calling conventions, these are currently
+    // not allowed to have kernel arguments.
+    if (!F || F->isDeclaration() || AMDGPU::isGraphics(F->getCallingConv()))
+      continue;
+    // Add feature attributes
     Changed |= addFeatureAttributes(*F);
   }
 
@@ -318,7 +419,6 @@ bool AMDGPUAnnotateKernelFeatures::doInitialization(CallGraph &CG) {
   if (!TPC)
     report_fatal_error("TargetMachine is required");
 
-  AS = AMDGPU::getAMDGPUAS(CG.getModule());
   TM = &TPC->getTM<TargetMachine>();
   return false;
 }

@@ -21,7 +21,7 @@ list( APPEND flags -isystem${divine_SOURCE_DIR}/ ) # for #includes starting with
 list( APPEND flags -isystem${divine_SOURCE_DIR}/bricks )
 
 set( NOEXCEPT "-fno-rtti;-fno-exceptions" )
-set( WARN "-Wall;-Wextra;-Wold-style-cast;-Werror" )
+set( WARN "-Wall;-Wextra;-Wold-style-cast" )
 
 mkobjs( libc "${flags};-D_PDCLIB_BUILD" )
 mkobjs( libc_cpp "${flags};-D_PDCLIB_BUILD;${NOEXCEPT};-std=c++17;-I${CMAKE_CURRENT_BINARY_DIR}" )

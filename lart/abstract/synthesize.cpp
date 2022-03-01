@@ -92,7 +92,7 @@ namespace lart::abstract
             auto fty = thawFn->getFunctionType();
             auto addr = irb.CreateBitCast( value, fty->getParamType( 0 ) );
 
-            return irb.CreateCall( thawFn, { addr } );
+            return irb.CreateCall( fty, { addr } );
         }
 
         template< typename IRB >
@@ -105,7 +105,7 @@ namespace lart::abstract
             auto v = irb.CreateBitCast( value, fty->getParamType( 0 ) );
             auto a = irb.CreateBitCast( addr, fty->getParamType( 1 ) );
 
-            return irb.CreateCall( freezeFn, { v, a } );
+            return irb.CreateCall( fty, freezeFn, { v, a } );
         }
 
         #define ENABLE_IF( name ) \
@@ -241,8 +241,8 @@ namespace lart::abstract
             auto trty = lower->getFunctionType()->getParamType( 0 );
             auto fty = llvm::FunctionType::get( trty, { val->getType() }, false );
             auto to_tristate = irb.CreateBitCast( ptr, fty->getPointerTo() );
-
-            auto tristate = irb.CreateCall( to_tristate, { val } );
+            
+            auto tristate = irb.CreateCall( fty, to_tristate, { val } ); // TODO: Check
             auto _bool = irb.CreateCall( lower, { tristate } );
             irb.CreateRet( _bool );
         }
@@ -393,7 +393,7 @@ namespace lart::abstract
             auto rty = Taint::faultable( T ) ? i8PTy() : lifter_function()->getReturnType();
             auto fty = llvm::FunctionType::get( rty, types_of( args ), false );
             auto op = irb.CreateBitCast( ptr, fty->getPointerTo() );
-            return irb.CreateCall( op, args );
+            return irb.CreateCall( fty, op, args );
         }
 
         template< typename builder_t >
@@ -488,7 +488,7 @@ namespace lart::abstract
             auto fn = lift( irb, fty, "aggr" );
             auto size = module->getDataLayout().getTypeAllocSize( val->getType() );
             auto i8ptr = irb.CreateBitCast( val, i8PTy() );
-            return irb.CreateCall( fn, { i8ptr, i64( size ) } );
+            return irb.CreateCall( fty, fn, { i8ptr, i64( size ) } );
         }
 
         template< typename V, typename IRB >
@@ -496,7 +496,7 @@ namespace lart::abstract
         {
             auto fty = llvm::FunctionType::get( i8PTy(), { val->getType() }, false );
             auto fn = lift( irb, fty, type_name( val ) );
-            return irb.CreateCall( fn, { val } );
+            return irb.CreateCall( fty, fn, { val } );
         }
 
         template< typename IRB >

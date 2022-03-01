@@ -181,7 +181,7 @@ struct HeapPointer : GenericPointer
 
 
 template< typename stream >
-auto operator<<( stream &o, PointerType p ) -> decltype( o << "" )
+auto operator<<( stream &o, PointerType p ) -> decltype( o << std::string() )
 {
     switch ( p )
     {
@@ -198,7 +198,7 @@ auto operator<<( stream &o, PointerType p ) -> decltype( o << "" )
 template< typename stream, typename P,
           typename Q = typename std::enable_if<
               std::is_same< decltype( P().type() ), PointerType >::value >::type >
-static inline auto operator<<( stream &o, P p ) -> decltype( o << "" )
+static inline auto operator<<( stream &o, P p ) -> decltype( o << std::string() )
 {
     o << p.type() << "* " << std::hex << p.object() << " " << p.offset();
     if ( p.offset() >= 16 && p.offset() % 16 < 10 ) o << "h";

@@ -46,7 +46,7 @@ void lart::LowerSelectPass::lower( SelectInst *si )
     BranchInst::Create( newTrue, newCont, si->getCondition(), bb );
 
     // Create a new PHI node in the cont block with the entries we need.
-    std::string name = si->getName(); si->setName("");
+    std::string name = si->getName().str(); si->setName("");
     PHINode *pn = PHINode::Create( si->getType(), 2, name, &*newCont->begin() );
     pn->addIncoming( si->getTrueValue(), newTrue );
     pn->addIncoming( si->getFalseValue(), bb );

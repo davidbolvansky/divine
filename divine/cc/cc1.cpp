@@ -74,7 +74,7 @@ namespace divine::cc
 
     CC1::CC1( std::shared_ptr< llvm::LLVMContext > ctx ) :
         divineVFS( new VFS() ),
-        overlayFS( new clang::vfs::OverlayFileSystem( clang::vfs::getRealFileSystem() ) ),
+        overlayFS( new llvm::vfs::OverlayFileSystem( llvm::vfs::getRealFileSystem() ) ),
         ctx( ctx )
     {
         if ( !ctx )
@@ -115,7 +115,7 @@ namespace divine::cc
     template< typename CodeGenAction >
     std::unique_ptr< CodeGenAction > CC1::cc1( std::string filename,
                                 FileType type, std::vector< std::string > args,
-                                llvm::IntrusiveRefCntPtr< clang::vfs::FileSystem > vfs )
+                                llvm::IntrusiveRefCntPtr< llvm::vfs::FileSystem > vfs )
     {
         if ( !vfs )
             vfs = overlayFS;
@@ -129,19 +129,21 @@ namespace divine::cc
                                                // "-disable-free",
                                                // "-disable-llvm-verifier",
                                                "-mthread-model", "posix",
-                                               "-mdisable-fp-elim",
+                                               // "-mdisable-fp-elim",
+                                               "-mframe-pointer=all",
                                                "-fmath-errno",
-                                               "-masm-verbose",
+                                               // "-masm-verbose", (on by default)
                                                "-mconstructor-aliases",
                                                "-munwind-tables",
-                                               "-fuse-init-array",
+                                               // "-fuse-init-array", (on by default)
                                                "-target-cpu", "x86-64",
-                                               "-dwarf-column-info",
+                                               // "-dwarf-column-info", (on by default)
                                                "-ferror-limit", "19",
-                                               "-fmessage-length", "212",
+                                               "-fmessage-length=212",
                                                "-mstackrealign",
                                                "-fobjc-runtime=gcc",
-                                               "-fdiagnostics-show-option",
+                                               "-fgnuc-version=4.2.1",
+                                                // "-fdiagnostics-show-option", (on by default)
                                                "-fcolor-diagnostics",
                                                "-isystem", "/builtin"
                                              };
@@ -173,8 +175,8 @@ namespace divine::cc
 
         TRACE( "cc1", cc1a );
         Diagnostics diag;
-        bool succ = clang::CompilerInvocation::CreateFromArgs(
-                            *invocation, &cc1a[ 0 ], &*cc1a.end(), diag.engine );
+        bool succ = clang::CompilerInvocation::CreateFromArgs(*invocation, cc1a,
+                                                              diag.engine);
         if ( !succ )
             throw CompileError( "Failed to create a compiler invocation for " + filename );
         invocation->getDependencyOutputOpts() = clang::DependencyOutputOptions();

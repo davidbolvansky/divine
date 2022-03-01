@@ -198,7 +198,7 @@ struct Autotrace {
         return vals;
     }
 
-    llvm::Value *getLit( std::string lit, llvm::IRBuilder<> irb ) {
+    llvm::Value *getLit( std::string lit, llvm::IRBuilder<> &irb ) {
         lit.push_back( 0 );
         auto it = litmap.find( lit );
         if ( it != litmap.end() )

@@ -1,13 +1,12 @@
 //===-------- llvm/GlobalIFunc.h - GlobalIFunc class ------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 ///
-/// \brief
+/// \file
 /// This file contains the declaration of the GlobalIFunc class, which
 /// represents a single indirect function in the IR. Indirect function uses
 /// ELF symbol type extension to mark that the address of a declaration should
@@ -46,10 +45,6 @@ public:
   static GlobalIFunc *create(Type *Ty, unsigned AddressSpace,
                              LinkageTypes Linkage, const Twine &Name,
                              Constant *Resolver, Module *Parent);
-
-  void copyAttributesFrom(const GlobalIFunc *Src) {
-    GlobalValue::copyAttributesFrom(Src);
-  }
 
   /// This method unlinks 'this' from the containing module, but does not
   /// delete it.

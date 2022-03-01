@@ -56,7 +56,7 @@ struct AbstractStubs
             if ( !aValCtor[ i ] )
             aValCtor[i] = llvm::cast< llvm::Function >(
                     m.getOrInsertFunction( aValStem + std::to_string( width ),
-                    llvm::IntegerType::get( ctx, width ) ) );
+                    llvm::IntegerType::get( ctx, width ) ).getCallee() );
             ASSERT( aValCtor[ i ] );
             lart::abstract::meta::set( aValCtor[ i ], lart::abstract::meta::tag::abstract_return );
             lart::abstract::meta::set( aValCtor[ i ], lart::abstract::meta::tag::abstract );

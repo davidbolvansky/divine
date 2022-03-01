@@ -18,8 +18,9 @@
 #include <llvm/Support/Errc.h>
 
 DIVINE_RELAX_WARNINGS
-#include <clang/Tooling/Tooling.h> // ClangTool
+// #include <clang/Tooling/Tooling.h> // ClangTool
 #include <llvm/Support/Path.h>
+#include <llvm/Support/VirtualFileSystem.h>
 DIVINE_UNRELAX_WARNINGS
 
 #include <brick-fs>
@@ -44,6 +45,8 @@ namespace divine::cc
                 case VFSError::InvalidIncludePath:
                     return "Invalid include path, not accessible in DIVINE";
             }
+
+            return "Unknown VFSError";
         }
     };
 
@@ -67,16 +70,16 @@ namespace divine::cc
     // A virtual filesystem implementing the Clang's interface, used, for example,
     // to allow compiler provided header files without the need to store them
     // explicitly on the physical filesystem
-    struct VFS : clang::vfs::FileSystem
+    struct VFS : llvm::vfs::FileSystem
     {
 
         // The result of a 'status' operation
-        using Status = clang::vfs::Status;
+        using Status = llvm::vfs::Status;
 
       private:
 
         // adapt file map to the expectations of LLVM's VFS
-        struct File : clang::vfs::File
+        struct File : llvm::vfs::File
         {
             File( llvm::StringRef content, Status stat ) :
                 content( content ), stat( stat )
@@ -122,7 +125,7 @@ namespace divine::cc
             return std::error_code( VFSError::InvalidIncludePath );
         }
 
-        Status statpath( const std::string &path, clang::vfs::Status stat )
+        Status statpath( const std::string &path, llvm::vfs::Status stat )
         {
             return Status::copyWithNewName( stat, path );
         }
@@ -137,7 +140,7 @@ namespace divine::cc
         }
 
         auto status( const llvm::Twine &_path ) ->
-            llvm::ErrorOr< clang::vfs::Status > override
+            llvm::ErrorOr< llvm::vfs::Status > override
         {
             auto path = normal( _path.str() );
             auto it = filemap.find( path );
@@ -149,7 +152,7 @@ namespace divine::cc
         }
 
         auto openFileForRead( const llvm::Twine &_path ) ->
-            llvm::ErrorOr< std::unique_ptr< clang::vfs::File > > override
+            llvm::ErrorOr< std::unique_ptr< llvm::vfs::File > > override
         {
             auto path = normal( _path.str() );
 
@@ -162,7 +165,7 @@ namespace divine::cc
         }
 
         auto dir_begin( const llvm::Twine &_path, std::error_code & ) ->
-            clang::vfs::directory_iterator override
+            llvm::vfs::directory_iterator override
         {
             std::cerr << "DVFS:dir_begin " << normal( _path.str() ) << std::endl;
             NOT_IMPLEMENTED();
@@ -188,8 +191,8 @@ namespace divine::cc
             auto &ref = filemap[ path ];
             ref.first = contents;
             auto name = llvm::sys::path::filename( path );
-            ref.second = clang::vfs::Status( name,
-                            clang::vfs::getNextVirtualUniqueID(),
+            ref.second = llvm::vfs::Status( name,
+                            llvm::vfs::getNextVirtualUniqueID(),
                             llvm::sys::TimePoint<>(), 0, 0, contents.size(),
                             llvm::sys::fs::file_type::regular_file,
                             llvm::sys::fs::perms::all_all );
@@ -204,8 +207,8 @@ namespace divine::cc
             for ( auto it = begin; it < end; ++it )
             {
                 auto path = brq::join_path( begin, std::next( it ) );
-                filemap[ path ] = { "", clang::vfs::Status( *it,
-                        clang::vfs::getNextVirtualUniqueID(),
+                filemap[ path ] = { "", llvm::vfs::Status( *it,
+                        llvm::vfs::getNextVirtualUniqueID(),
                         llvm::sys::TimePoint<>(), 0, 0, 0,
                         llvm::sys::fs::file_type::directory_file,
                         llvm::sys::fs::perms::all_all ) };
@@ -244,12 +247,12 @@ namespace divine::cc
         }
 
         template< typename It >
-        std::unique_ptr< clang::vfs::File > mkfile( It it, clang::vfs::Status stat )
+        std::unique_ptr< llvm::vfs::File > mkfile( It it, llvm::vfs::Status stat )
         {
             return std::make_unique< File >( it->second.first, stat );
         }
 
-        std::map< std::string, std::pair< llvm::StringRef, clang::vfs::Status > > filemap;
+        std::map< std::string, std::pair< llvm::StringRef, llvm::vfs::Status > > filemap;
         std::vector< std::string > storage;
         std::set< std::string > allowedPrefixes;
         std::string _cwd;

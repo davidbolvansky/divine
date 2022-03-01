@@ -1,9 +1,8 @@
 //===-- DifferenceEngine.h - Module comparator ------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -34,7 +33,8 @@ namespace llvm {
   public:
     /// A RAII object for recording the current context.
     struct Context {
-      Context(DifferenceEngine &Engine, Value *L, Value *R) : Engine(Engine) {
+      Context(DifferenceEngine &Engine, const Value *L, const Value *R)
+          : Engine(Engine) {
         Engine.consumer.enterContext(L, R);
       }
 
@@ -51,7 +51,7 @@ namespace llvm {
     class Oracle {
       virtual void anchor();
     public:
-      virtual bool operator()(Value *L, Value *R) = 0;
+      virtual bool operator()(const Value *L, const Value *R) = 0;
 
     protected:
       virtual ~Oracle() {}
@@ -60,8 +60,8 @@ namespace llvm {
     DifferenceEngine(Consumer &consumer)
       : consumer(consumer), globalValueOracle(nullptr) {}
 
-    void diff(Module *L, Module *R);
-    void diff(Function *L, Function *R);
+    void diff(const Module *L, const Module *R);
+    void diff(const Function *L, const Function *R);
     void log(StringRef text) {
       consumer.log(text);
     }
@@ -79,7 +79,7 @@ namespace llvm {
     }
 
     /// Determines whether two global values are equivalent.
-    bool equivalentAsOperands(GlobalValue *L, GlobalValue *R);
+    bool equivalentAsOperands(const GlobalValue *L, const GlobalValue *R);
 
   private:
     Consumer &consumer;
