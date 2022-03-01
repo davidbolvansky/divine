@@ -399,7 +399,7 @@ namespace lart::abstract
         void visitCallInst( llvm::CallInst &call )
         {
             /* TODO what happens if there is more than one? */
-            for ( auto fn : resolve_call( &call ) )
+            for ( auto fn : resolve_call( call ) )
             {
                 if ( !is_abstractable( fn ) && meta::abstract::has( &call ) )
                     continue;
@@ -449,7 +449,7 @@ namespace lart::abstract
 
         void propagate( llvm::Value * inst ) noexcept;
 
-        void propagate_in( llvm::Function *fn, llvm::CallSite call ) noexcept;
+        void propagate_in( llvm::Function *fn, llvm::CallBase &call ) noexcept;
         void propagate_out( llvm::ReturnInst * ret ) noexcept;
 
         bool propagate_wrap( llvm::Value * lhs, llvm::Value * rhs ) noexcept;

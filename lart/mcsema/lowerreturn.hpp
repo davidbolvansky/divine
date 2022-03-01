@@ -314,9 +314,9 @@ namespace lart::mcsema
                 }
             }
 
-            llvm::CallInst *rewire( llvm::CallSite old_cs, llvm::Function *new_f )
+            llvm::CallInst *rewire( llvm::CallBase &old_cs, llvm::Function *new_f )
             {
-                llvm::IRBuilder<> irb( old_cs.getInstruction() );
+                llvm::IRBuilder<> irb( &old_cs );
                 return irb.CreateCall(
                         new_f,
                         values_t( old_cs.arg_begin(), old_cs.arg_end() ) );
@@ -324,7 +324,7 @@ namespace lart::mcsema
 
             void fix( llvm::CallInst *old_call, llvm::Function *new_f )
             {
-                auto n_call = rewire( { old_call }, new_f );
+                auto n_call = rewire( *old_call, new_f );
 
                 std::unordered_map< llvm::Instruction *, uint64_t > extracts;
                 values_t erasable;

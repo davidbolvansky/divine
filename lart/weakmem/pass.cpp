@@ -9,7 +9,7 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/IRBuilder.h>
-#include <llvm/IR/CallSite.h>
+#include <llvm/IR/AbstractCallSite.h>
 #include <llvm/Transforms/Utils/BasicBlockUtils.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 #include <llvm/Analysis/CaptureTracking.h>
@@ -172,7 +172,7 @@ struct Substitute {
                     .filter( [&]( llvm::User *i ) {
                         return _bypass.count( llvm::cast< llvm::Instruction >( i )->getParent()->getParent() ) == 0;
                     } )
-                    .map( []( llvm::User *i ) { return llvm::CallSite( i ); } )
+                    .map( []( llvm::User *i ) { return llvm::cast< llvm::CallBase >( i ); } )
                     .freeze();
     }
 
@@ -180,11 +180,11 @@ struct Substitute {
         ASSERT( free );
         auto &ctx = free->getParent()->getContext();
 
-        for ( auto &cs : getCallSites( free ) ) {
+        for ( auto *cb : getCallSites( free ) ) {
             std::vector< llvm::Value * > args;
             args.emplace_back( llvm::ConstantInt::get( llvm::Type::getInt32Ty( ctx ), 1 ) );
-            args.emplace_back( cs.getArgOperand( 0 ) );
-            llvm::CallInst::Create( _cleanup, args, "", cs.getInstruction() );
+            args.emplace_back( cb->getArgOperand( 0 ) );
+            llvm::CallInst::Create( _cleanup, args, "", cb );
         }
     }
 
@@ -192,11 +192,11 @@ struct Substitute {
         ASSERT( resize );
         auto i32 = llvm::IntegerType::getInt32Ty( resize->getParent()->getContext() );
 
-        for ( auto &cs : getCallSites( resize ) ) {
+        for ( auto *cb : getCallSites( resize ) ) {
             std::vector< llvm::Value * > args;
-            llvm::IRBuilder<> irb( cs.getInstruction() );
-            args.push_back( cs.getArgOperand( 0 ) );
-            auto size = cs.getArgOperand( 1 );
+            llvm::IRBuilder<> irb( cb );
+            args.push_back( cb->getArgOperand( 0 ) );
+            auto size = cb->getArgOperand( 1 );
             if ( size->getType() != i32 ) {
                 args.push_back( irb.CreateIntCast( size, i32, false ) );
             } else {

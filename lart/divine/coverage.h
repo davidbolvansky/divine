@@ -2,7 +2,7 @@
 
 DIVINE_RELAX_WARNINGS
 #include <llvm/IR/Module.h>
-#include <llvm/IR/CallSite.h>
+#include <llvm/IR/AbstractCallSite.h>
 DIVINE_UNRELAX_WARNINGS
 
 #include <lart/support/pass.h>
@@ -18,7 +18,7 @@ struct Coverage {
     }
 
     llvm::Function * _choose;
-    std::vector< llvm::CallSite > _chooses;
+    std::vector< llvm::CallBase * > _chooses;
 
     void run( llvm::Module &m );
 

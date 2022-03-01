@@ -27,7 +27,7 @@
 DIVINE_RELAX_WARNINGS
 #include <llvm/IR/Type.h>
 #include <llvm/IR/GlobalVariable.h>
-#include <llvm/IR/CallSite.h>
+#include <llvm/IR/AbstractCallSite.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Module.h>
 #include <llvm/ADT/StringMap.h>
@@ -279,8 +279,8 @@ Program::Slot Program::insert( int function, llvm::Value *val, bool )
 void Program::hypercall( Position p )
 {
     Program::Instruction &insn = instruction( p.pc );
-    llvm::CallSite CS( &*p.I );
-    llvm::Function *F = CS.getCalledFunction();
+    auto *CB = llvm::cast< llvm::CallBase>( &*p.I );
+    llvm::Function *F = CB->getCalledFunction();
     if ( insn.opcode != llvm::Instruction::Call )
         brq::raise() << "cannot 'invoke' a hypercall, use 'call' instead: " << F->getName().str();
     insn.opcode = lx::OpHypercall;
@@ -325,8 +325,8 @@ Program::Position Program::insert( Position p )
     if ( dyn_cast< llvm::CallInst >( p.I ) ||
          dyn_cast< llvm::InvokeInst >( p.I ) )
     {
-        llvm::CallSite CS( &*p.I );
-        llvm::Function *F = CS.getCalledFunction();
+        auto *CB = llvm::cast< llvm::CallBase>( &*p.I );
+        llvm::Function *F = CB->getCalledFunction();
         if ( F ) // you can actually invoke a label
             switch ( F->getIntrinsicID() )
             {

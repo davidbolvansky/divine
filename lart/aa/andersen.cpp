@@ -3,7 +3,7 @@
 DIVINE_RELAX_WARNINGS
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Constants.h>
-#include <llvm/IR/CallSite.h>
+#include <llvm/IR/AbstractCallSite.h>
 DIVINE_UNRELAX_WARNINGS
 
 #include <lart/aa/andersen.h>
@@ -150,8 +150,8 @@ void Andersen::build( llvm::Instruction &i ) {
         constraint( Constraint::Copy, &i, i.getOperand( 0 ) );
 
     if ( llvm::isa< llvm::CallInst >( i ) ) {
-        llvm::CallSite cs( &i );
-        if ( auto *F = cs.getCalledFunction() ) {
+        auto *cb = llvm::cast< llvm::CallBase >( &i );
+        if ( auto *F = cb->getCalledFunction() ) {
             if ( F->getName().str() == "__divine_malloc" ) { /* FIXME */
                 _amls.push_back( new Node );
                 _amls.back()->aml = true;

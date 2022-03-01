@@ -26,7 +26,6 @@
 
 DIVINE_RELAX_WARNINGS
 #include <llvm/IR/Instructions.h>
-#include <llvm/IR/CallSite.h>
 DIVINE_UNRELAX_WARNINGS
 
 #include <cxxabi.h>

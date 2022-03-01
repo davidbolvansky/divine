@@ -54,8 +54,8 @@ void makeExceptionsVisible( EhInfo ehi, llvm::Function &fn, ShouldTransformCall 
 
     auto calls = query::query( fn ).flatten()
         .filter( query::is< llvm::CallInst > || query::is< llvm::InvokeInst > )
-        .map( []( llvm::Instruction &call ) { return llvm::CallSite( &call ); } )
-        .filter( []( llvm::CallSite &cs ) { return !cs.doesNotThrow(); } )
+        .map( []( llvm::Instruction &call ) { return llvm::cast< llvm::CallBase >( &call ); } )
+        .filter( []( llvm::CallBase *cb ) { return !cb->doesNotThrow(); } )
         .filter( shouldTransform )
         .freeze(); // avoid changing BBs while iterating through them
 
@@ -64,8 +64,8 @@ void makeExceptionsVisible( EhInfo ehi, llvm::Function &fn, ShouldTransformCall 
     bool invokeAdded = false;
     for ( auto &cs : calls ) {
 
-        if ( cs.isInvoke() ) {
-            auto *inst = llvm::cast< llvm::InvokeInst >( cs.getInstruction() );
+        if ( llvm::isa< llvm::InvokeInst >( cs ) ) {
+            auto *inst = llvm::cast< llvm::InvokeInst >( cs );
             auto *unwindBB = inst->getUnwindDest();
             auto *lp = llvm::cast< llvm::LandingPadInst >( unwindBB->getFirstNonPHI() );
 
@@ -84,7 +84,7 @@ void makeExceptionsVisible( EhInfo ehi, llvm::Function &fn, ShouldTransformCall 
                 unwindBB->rbegin()->eraseFromParent(); // br added by splitBasicBlock
             }
         } else {
-            auto *inst = llvm::cast< llvm::CallInst >( cs.getInstruction() );
+            auto *inst = llvm::cast< llvm::CallInst >( cs );
             invokeAdded = true;
 
             auto *cleanupBB = llvm::BasicBlock::Create( fn.getParent()->getContext(), "lart.cleanup.invoke.unwind", &fn );
@@ -122,20 +122,20 @@ void atExits( llvm::Function &fn, AtExit &&atExit ) {
 template< typename AfterCall /* void ( CallSite &, llvm::IRBuilder<> ) */ >
 void afterCalls( llvm::Function &fn, AfterCall &&afterCall, bool include_intrinsics = false ) {
     auto calls = query::query( fn ).flatten()
-            .map( []( auto &i ) { return llvm::CallSite{ &i }; } )
-            .filter( [&]( auto &cs ) { return cs && (include_intrinsics
-                                                     || !cs.getCalledFunction()
-                                                     || !cs.getCalledFunction()->getIntrinsicID()); } )
+            .map( []( auto &i ) { return llvm::cast< llvm::CallBase >( &i ); } )
+            .filter( [&]( auto &cb ) { return cb && (include_intrinsics
+                                                     || !cb->getCalledFunction()
+                                                     || !cb->getCalledFunction()->getIntrinsicID()); } )
             .freeze();
     using it = llvm::BasicBlock::iterator;
-    for ( auto cs : calls ) {
-        if ( cs.isCall() )
-            afterCall( cs, llvm::IRBuilder<>( cs.getInstruction()->getParent(),
-                                              std::next( it( cs.getInstruction() ) ) ) );
-        else if ( cs.isInvoke() ) {
-            auto *inv = llvm::cast< llvm::InvokeInst >( cs.getInstruction() );
+    for ( auto *cb : calls ) {
+        if ( llvm::isa< llvm::CallInst >( cb ) )
+            afterCall( *cb, llvm::IRBuilder<>( cb->getParent(),
+                                              std::next( it( cb ) ) ) );
+        else if ( llvm::isa< llvm::InvokeInst >( cb ) ) {
+            auto *inv = llvm::cast< llvm::InvokeInst >( cb );
             for ( auto *dst : { inv->getNormalDest(), inv->getUnwindDest() } )
-                afterCall( cs, llvm::IRBuilder<>( dst, dst->getFirstInsertionPt() ) );
+                afterCall( *cb, llvm::IRBuilder<>( dst, dst->getFirstInsertionPt() ) );
         }
     }
 }
@@ -230,9 +230,9 @@ void addAllocaCleanups( EhInfo ehi, llvm::Function &fn, ShouldClean &&shouldClea
 
     analysis::BasicBlockSCC scc( fn );
     analysis::Reachability reach( fn, &scc );
-    makeExceptionsVisible( ehi, fn, [&]( llvm::CallSite &cs ) {
+    makeExceptionsVisible( ehi, fn, [&]( llvm::CallBase *cb ) {
         return !query::query( allocas )
-                    .filter( [&]( llvm::AllocaInst *al ) { return reach.reachable( al, cs.getInstruction() ); } )
+                    .filter( [&]( llvm::AllocaInst *al ) { return reach.reachable( al, cb ); } )
                     .empty();
     } );
 

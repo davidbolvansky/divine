@@ -62,10 +62,10 @@ namespace lart::abstract {
             return bundle;
         }
 
-        auto packed( llvm::CallSite call, const Matched & matched ) const noexcept
+        auto packed( llvm::CallBase &call, const Matched & matched ) const noexcept
             -> llvm::Value *
         {
-            llvm::IRBuilder<> irb( call.getInstruction() );
+            llvm::IRBuilder<> irb( &call );
 
             auto ty = type();
             auto addr = irb.CreateAlloca( ty );
@@ -159,7 +159,7 @@ namespace lart::abstract {
         return create_call( ret, fn, Values{ val } );
     }
 
-    auto stash( llvm::Function *fn, llvm::CallSite call, const Matched & matched ) -> llvm::Value *
+    auto stash( llvm::Function *fn, llvm::CallBase &call, const Matched & matched ) -> llvm::Value *
     {
         return ArgumentsBundle( fn ).packed( call, matched );
     }
@@ -210,7 +210,7 @@ namespace lart::abstract {
         }
 
         for ( auto fn : fns_with_abstract_args( m ) )
-            each_call( fn, [&]( auto call ) { stash( fn, call, matched ); } );
+            each_call( fn, [&]( auto *call ) { stash( fn, *call, matched ); } );
     }
 
 
@@ -222,7 +222,7 @@ namespace lart::abstract {
         auto abstract = query::query( meta::enumerate( m ) )
             .map( query::llvmdyncast< llvm::CallInst > )
             .filter( query::notnull )
-            .filter( [] ( auto call ) { return !is_faultable( call ); } )
+            .filter( [] ( auto &call ) { return !is_faultable( call ); } )
             .freeze();
 
         for ( auto * call : abstract )

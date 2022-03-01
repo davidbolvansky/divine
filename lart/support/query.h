@@ -1,7 +1,7 @@
 // -*- C++ -*- (c) 2015 Vladimír Štill <xstill@fi.muni.cz>
 
 DIVINE_RELAX_WARNINGS
-#include <llvm/IR/CallSite.h>
+#include <llvm/IR/AbstractCallSite.h>
 #include <llvm/Support/Casting.h>
 DIVINE_UNRELAX_WARNINGS
 
@@ -37,9 +37,9 @@ template< typename T > IsNotClosure< T > isnot;
 struct is_call_
 {
     template< typename F >
-    bool operator()( F *v ) const { return static_cast< bool >( llvm::CallSite{ v } ); }
+    bool operator()( F *v ) const { return llvm::isa< llvm::CallBase > ( v ); }
     template< typename F >
-    bool operator()( F &v ) const { return static_cast< bool >( llvm::CallSite{ &v } ); }
+    bool operator()( F &v ) const { return llvm::isa< llvm::CallBase > ( &v ); }
 };
 
 static is_call_ is_call;

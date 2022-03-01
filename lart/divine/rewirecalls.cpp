@@ -17,7 +17,7 @@
 #include <lart/divine/rewirecalls.h>
 
 DIVINE_RELAX_WARNINGS
-#include <llvm/IR/CallSite.h>
+#include <llvm/IR/AbstractCallSite.h>
 DIVINE_UNRELAX_WARNINGS
 
 namespace lart::divine {
@@ -169,8 +169,8 @@ void rewire_calls_t::init()
 {
 
     auto is_indirect_call = [&]( auto &inst ) {
-        auto cs = llvm::CallSite( &inst );
-        return ( cs.isCall() || cs.isInvoke() ) && cs.isIndirectCall();
+        auto cb = llvm::cast < llvm::CallBase > ( &inst );
+        return ( llvm::isa< llvm::CallInst> ( cb ) || llvm::isa< llvm::InvokeInst> ( cb ) ) && cb->isIndirectCall();
     };
 
     auto calls = call_types_t< llvm::CallInst, llvm::InvokeInst >( _module, is_indirect_call );

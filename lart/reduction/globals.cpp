@@ -3,7 +3,7 @@
 DIVINE_RELAX_WARNINGS
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Instructions.h>
-#include <llvm/IR/CallSite.h>
+#include <llvm/IR/AbstractCallSite.h>
 DIVINE_UNRELAX_WARNINGS
 
 #include <lart/reduction/passes.h>
@@ -60,13 +60,13 @@ struct ReadOnlyGlobals {
     bool detectIsLoad( llvm::Value *, llvm::AllocaInst * ) { return true; }
 
     bool detectIsLoad( llvm::Value *v, llvm::CallInst *c ) {
-        return detectIsLoad( v, llvm::CallSite( c ) );
+        return detectIsLoad( v, llvm::cast< llvm::CallBase >( c ) );
     }
     bool detectIsLoad( llvm::Value *v, llvm::InvokeInst *i ) {
-        return detectIsLoad( v, llvm::CallSite( i ) );
+        return detectIsLoad( v, llvm::cast< llvm::CallBase >( i ) );
     }
-    bool detectIsLoad( llvm::Value *v, llvm::CallSite cs ) {
-        auto *fn = llvm::dyn_cast< llvm::Function >( cs.getCalledValue()->stripPointerCasts() );
+    bool detectIsLoad( llvm::Value *v, llvm::CallBase &cb ) {
+        auto *fn = llvm::dyn_cast< llvm::Function >( cb.getCalledOperand()->stripPointerCasts() );
         if ( !fn ) // indirect call, need pointer analysis :-/
             return false;
         auto ait = fn->arg_begin(), aend = fn->arg_end();
@@ -74,8 +74,8 @@ struct ReadOnlyGlobals {
         bool all = true;
         // must iterate through all actual parameters, if no formal param is there
         // for any of them must return false
-        for ( int i = 0, e = cs.arg_size(); all && i < e; ++i, ++ait )
-            if ( cs.getArgument( i ) == v )
+        for ( int i = 0, e = cb.arg_size(); all && i < e; ++i, ++ait )
+            if ( cb.getArgOperand( i ) == v )
                 all = ait != aend && dispatchReadOnly( &*ait );
         return all;
     }

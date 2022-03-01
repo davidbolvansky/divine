@@ -29,7 +29,6 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/GlobalAlias.h>
 #include <llvm/IR/Constants.h>
-#include <llvm/IR/CallSite.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Function.h>
 DIVINE_UNRELAX_WARNINGS

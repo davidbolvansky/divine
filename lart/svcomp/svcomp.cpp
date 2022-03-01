@@ -8,7 +8,7 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/IRBuilder.h>
-#include <llvm/IR/CallSite.h>
+#include <llvm/IR/AbstractCallSite.h>
 // #include <llvm/Transforms/Utils/BasicBlockUtils.h>
 // #include <llvm/Transforms/Utils/Cloning.h>
 DIVINE_UNRELAX_WARNINGS
@@ -75,12 +75,12 @@ struct NondetTracking {
 
     void track( llvm::Function &fn ) {
         auto calls = query::query( fn ).flatten()
-                          .map( []( auto &i ) { return llvm::CallSite( &i ); } )
-                          .filter( [this]( auto &cs ) {
-                              if ( !cs )
+                          .map( []( auto &i ) { return llvm::cast< llvm::CallBase >( &i ); } )
+                          .filter( [this]( auto &cb ) {
+                              if ( !cb )
                                   return false;
                               auto *fn = llvm::dyn_cast< llvm::Function >(
-                                              cs.getCalledValue()->stripPointerCasts() );
+                                              cb->getCalledOperand()->stripPointerCasts() );
                               return fn && fn->getName().startswith( _nondet );
                           } )
                           .freeze();
@@ -106,7 +106,7 @@ struct NondetTracking {
                 }
             }
             else if ( auto *sw = llvm::dyn_cast< llvm::SwitchInst >( i ) ) {
-                ASSERT_EQ( sw->getCondition(), cs.getInstruction() );
+                ASSERT_EQ( sw->getCondition(), cs );
                 auto succs = sw->getNumSuccessors();
                 auto cases = sw->getNumCases();
                 ASSERT_EQ( succs - 1, cases );

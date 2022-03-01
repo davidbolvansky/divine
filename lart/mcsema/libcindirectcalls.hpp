@@ -70,19 +70,19 @@ struct libc_indirect_calls : abstract::LLVMUtil< libc_indirect_calls >
             .flatten()
             .filter( []( auto &inst )
                {
-                   auto cs = llvm::CallSite{ &inst };
-                   return cs && cs.isIndirectCall();
+                   auto *cb = llvm::cast< llvm::CallBase >( &inst );
+                   return cb && cb->isIndirectCall();
                } )
             .map( []( auto &inst ){ return &inst; } )
             .freeze();
 
         for ( auto c_inst : indirect_calls )
         {
-            auto cs = llvm::CallSite{ c_inst };
+            auto &cb = llvm::cast< llvm::CallBase >( *c_inst );
 
             // It is indirect call -> called value is not function -> cannot use
             // getFunctionType() directly
-            auto callee = cs.getCalledValue();
+            auto callee = cb.getCalledOperand();
             auto callee_p = llvm::dyn_cast< llvm::PointerType >( callee->getType() );
             auto callee_t = llvm::dyn_cast< llvm::FunctionType >(
                     callee_p->getElementType() );
@@ -97,9 +97,9 @@ struct libc_indirect_calls : abstract::LLVMUtil< libc_indirect_calls >
             llvm::IRBuilder<> ir( c_inst );
             auto casted_callee = ir.CreateBitCast( callee, ptr( correct_type ) );
 
-            std::vector< llvm::Value * > new_args{ cs.arg_begin(),
-                                                   cs.arg_end() };
-            for ( auto i = cs.arg_size(); i < args_size; ++i )
+            std::vector< llvm::Value * > new_args{ cb.arg_begin(),
+                                                   cb.arg_end() };
+            for ( auto i = cb.arg_size(); i < args_size; ++i )
                 new_args.push_back( undef( i64Ty() ) );
 
             auto new_call = ir.CreateCall( correct_type, casted_callee, new_args );

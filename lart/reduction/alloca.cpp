@@ -7,7 +7,6 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/IntrinsicInst.h>
-#include <llvm/IR/CallSite.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/Analysis/CaptureTracking.h>
 DIVINE_UNRELAX_WARNINGS

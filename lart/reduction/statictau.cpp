@@ -4,7 +4,7 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/IntrinsicInst.h>
-#include <llvm/IR/CallSite.h>
+#include <llvm/IR/AbstractCallSite.h>
 DIVINE_UNRELAX_WARNINGS
 
 #include <lart/reduction/passes.h>
@@ -31,10 +31,10 @@ struct SimpleEscape {
     static bool isAllocation( llvm::Instruction *i ) {
         if ( llvm::isa< llvm::AllocaInst >( i ) )
             return true;
-        llvm::CallSite cs( i );
-        if ( !cs || !cs.getCalledFunction() )
+        auto *cb = llvm::cast< llvm::CallBase >( i );
+        if ( !cb || !cb->getCalledOperand() )
             return false;
-        auto name = cs.getCalledFunction()->getName();
+        auto name = cb->getCalledOperand()->getName();
         return name == "__vm_obj_make"
                || name == "malloc" || name == "calloc" || name == "realloc"
                || name.startswith( "_Znwm" ) || name.startswith( "_Znam" );

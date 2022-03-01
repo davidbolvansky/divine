@@ -13,7 +13,7 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/IR/CFG.h>
 #include <llvm/Analysis/CaptureTracking.h>
 #include <llvm/Transforms/Utils/BasicBlockUtils.h>
-#include <llvm/IR/CallSite.h>
+#include <llvm/IR/AbstractCallSite.h>
 #include <llvm/IR/ValueMap.h>
 #include <llvm/IR/DebugInfo.h>
 
@@ -715,26 +715,26 @@ namespace _detail {
                 // if it is a call and we don't have capture information we
                 // must assume the return value depends on the alloca argument
                 // if it can fit a pointer inside
-                llvm::CallSite cs( use );
+                auto *cb = llvm::cast< llvm::CallBase >( use );
 
-                for ( unsigned i = 0; i < cs.arg_size(); ++i )
-                    if ( cs.getArgument( i ) == def && !cs.doesNotCapture( i ) )
+                for ( unsigned i = 0; i < cb->arg_size(); ++i )
+                    if ( cb->getArgOperand( i ) == def && !cb->doesNotCapture( i ) )
                         captures = true;
                 // track arguments which can possibly receive a copy of 'def'
                 if ( captures ) {
-                    for ( unsigned i = 0; i < cs.arg_size(); ++i ) {
-                        if ( cs.getArgument( i ) != def && !cs.onlyReadsMemory()
-                                && !cs.onlyReadsMemory( i ) )
+                    for ( unsigned i = 0; i < cb->arg_size(); ++i ) {
+                        if ( cb->getArgOperand( i ) != def && !cb->onlyReadsMemory()
+                                && !cb->onlyReadsMemory( i ) )
                         {
-                            for ( auto *u : cs.getArgument( i )->users() )
+                            for ( auto *u : cb->getArgOperand( i )->users() )
                                 pointerTransitiveUsers( users, edges,
-                                        cs.getArgument( i ),
+                                        cb->getArgOperand( i ),
                                         u, std::numeric_limits< int >::max() );
                         }
                     }
                 }
                 auto *ty = use->getType();
-                auto *module = cs->getParent()->getParent()->getParent();
+                auto *module = cb->getParent()->getParent()->getParent();
                 captures = captures && canContainPointer( ty, module );
                 maxRefDepth = std::numeric_limits< int >::max(); // can't do any better :-/
                 break;
@@ -856,10 +856,10 @@ inline llvm::Function * changeReturnType( llvm::Function *fn, llvm::Type *rty )
 }
 
 namespace detail {
-inline llvm::Function *throwOnUnknown( llvm::CallSite &cs )
+inline llvm::Function *throwOnUnknown( llvm::CallBase &cb )
 {
     brq::raise< std::runtime_error >() << "could not clone function: calling unknown value:"
-                                       << cs.getCalledValue();
+                                       << cb.getCalledOperand();
     return nullptr;
 }
 
@@ -868,10 +868,10 @@ inline bool cloneAll( llvm::Function & ) {  return true; }
 
 template< typename FunMap,
           typename Filter = bool (*)( llvm::Function & ),
-          typename OnUnknown = llvm::Function *(*)( llvm::CallSite & ),
+          typename OnUnknown = llvm::Function *(*)( llvm::CallBase & ),
           typename = decltype( std::declval< FunMap & >().emplace( nullptr, nullptr ) ),
           typename = std::result_of_t< Filter( llvm::Function & ) >,
-          typename = std::result_of_t< OnUnknown( llvm::CallSite & ) > >
+          typename = std::result_of_t< OnUnknown( llvm::CallBase & ) > >
 llvm::Function *cloneFunctionRecursively( llvm::Function *fn, FunMap &map,
                                         Filter filter = detail::cloneAll,
                                         OnUnknown onUnknown = detail::throwOnUnknown,
@@ -880,10 +880,10 @@ llvm::Function *cloneFunctionRecursively( llvm::Function *fn, FunMap &map,
 // map can be initialized to fnptr -> fnptr to skip cloning *fnptr
 template< typename FunMap,
           typename Filter = bool (*)( llvm::Function & ),
-          typename OnUnknown = llvm::Function *(*)( llvm::CallSite & ),
+          typename OnUnknown = llvm::Function *(*)( llvm::CallBase & ),
           typename = decltype( std::declval< FunMap & >().emplace( nullptr, nullptr ) ),
           typename = std::result_of_t< Filter( llvm::Function & ) >,
-          typename = std::result_of_t< OnUnknown( llvm::CallSite & ) > >
+          typename = std::result_of_t< OnUnknown( llvm::CallBase & ) > >
 void cloneCalleesRecursively( llvm::Function *fn, FunMap &map,
                               Filter filter = detail::cloneAll,
                               OnUnknown onUnknown = detail::throwOnUnknown,
@@ -893,13 +893,13 @@ void cloneCalleesRecursively( llvm::Function *fn, FunMap &map,
         for ( auto &ins : bb ) {
             if ( llvm::isa< llvm::IntrinsicInst >( ins ) )
                 continue;
-            llvm::CallSite cs( &ins );
-            if ( cs ) {
-                auto *callee = cs.getCalledFunction();
-                callee = callee ? callee : onUnknown( cs );
+            auto *cb = llvm::cast< llvm::CallBase >( &ins );
+            if ( cb ) {
+                auto *callee = cb->getCalledFunction();
+                callee = callee ? callee : onUnknown( *cb );
                 if ( !callee )
                     continue; // ignored by onUnknown
-                cs.setCalledFunction( cloneFunctionRecursively( callee, map, filter, onUnknown, cloneFunctionPointers ) );
+                cb->setCalledFunction( cloneFunctionRecursively( callee, map, filter, onUnknown, cloneFunctionPointers ) );
             }
 
             if ( !cloneFunctionPointers )

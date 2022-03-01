@@ -30,7 +30,6 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/IRBuilder.h>
-#include <llvm/IR/CallSite.h>
 #include <llvm/CodeGen/IntrinsicLowering.h>
 #include <llvm/IR/IntrinsicInst.h>
 DIVINE_UNRELAX_WARNINGS

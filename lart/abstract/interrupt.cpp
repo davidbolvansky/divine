@@ -58,7 +58,7 @@ struct RecursiveCalls {
                 .freeze();
 
             for ( auto call : calls )
-                for ( auto called_fn : resolve_call( call ) )
+                for ( auto called_fn : resolve_call( *call ) )
                 {
                     if ( called_fn == fn )
                         return true;

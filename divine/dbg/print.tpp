@@ -118,11 +118,11 @@ std::string Print< Ctx >::instruction( int padding, int colmax )
 
     if ( insn.opcode == llvm::Instruction::Call || insn.opcode == llvm::Instruction::Invoke )
     {
-        llvm::CallSite cs( I );
+        auto *cb = llvm::cast< llvm::CallBase >( I );
 
-        skipMask |= uint64_t( 1 ) << (argc - (cs.isCall() ? 1 : 3));
+        skipMask |= uint64_t( 1 ) << (argc - ( llvm::isa< llvm::CallInst >( cb ) ? 1 : 3));
 
-        if ( auto *target = cs.getCalledFunction() )
+        if ( auto *target = cb->getCalledFunction() )
         {
             auto tgt = target->getName().str();
             argcols = tgt.size() + 2;
@@ -130,7 +130,7 @@ std::string Print< Ctx >::instruction( int padding, int colmax )
         }
         else
         {
-            auto *val = cs.getCalledValue();
+            auto *val = cb->getCalledOperand();
             auto oname = value( val, DisplayVal::PreferName );
             argcols = oname.size() + 1;
             out << ( oname.empty() ? "?" : oname ) << " ";

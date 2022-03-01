@@ -292,7 +292,8 @@ namespace lart::abstract
                     push( u );
                 else if ( util::is_one_of< llvm::CallInst, llvm::InvokeInst >( u ) )
                 {
-                    for ( auto &fn : resolve_call( llvm::CallSite( u ) ) )
+                    auto &cbu = llvm::cast< llvm::CallBase >( *u );
+                    for ( auto &fn : resolve_call( cbu ) )
                         if ( is_abstractable( fn ) )
                         {
                             auto name = "__lamp_fn_" + fn->getName().str();
@@ -302,7 +303,7 @@ namespace lart::abstract
                                 propagate( u, type_from_meta( u, meta.value() ) );
                         } else {
                             if ( !meta::function::ignore_call( fn ) )
-                                propagate_in( fn, llvm::CallSite( u ) );
+                                propagate_in( fn, cbu );
                         }
                 }
                 else if ( auto ret = llvm::dyn_cast< llvm::ReturnInst >( u ) )
@@ -314,7 +315,7 @@ namespace lart::abstract
             }
     }
 
-    void DataFlowAnalysis::propagate_in( llvm::Function *fn, llvm::CallSite call ) noexcept
+    void DataFlowAnalysis::propagate_in( llvm::Function *fn, llvm::CallBase &call ) noexcept
     {
         for ( const auto & arg : fn->args() )
         {
@@ -327,9 +328,9 @@ namespace lart::abstract
 
     void DataFlowAnalysis::propagate_out( llvm::ReturnInst * ret ) noexcept
     {
-        auto handle_call = [&]( auto call )
+        auto handle_call = [&]( auto *call )
         {
-            for ( auto fn : resolve_call( call ) )
+            for ( auto fn : resolve_call( *call ) )
                 if ( !meta::function::ignore_return( fn ) )
                 {
                     auto val = ret->getReturnValue();

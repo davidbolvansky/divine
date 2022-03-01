@@ -57,10 +57,10 @@ struct LeakCheck
             if ( fn.empty() || &fn == suspend || &fn == exit )
                 continue;
             cleanup::makeExceptionsVisible( ehInfo, fn, []( const auto & ) { return true; } );
-            cleanup::afterCalls( fn, [&]( llvm::CallSite &cs, llvm::IRBuilder<> irb )
+            cleanup::afterCalls( fn, [&]( llvm::CallBase &cb, llvm::IRBuilder<> irb )
                     {
-                        if ( !cs.getCalledFunction() ||
-                             !brq::starts_with( cs.getCalledFunction()->getName().str(), "__vm_" ) )
+                        if ( !cb.getCalledFunction() ||
+                             !brq::starts_with( cb.getCalledFunction()->getName().str(), "__vm_" ) )
                             irb.CreateCall( trace, { irb.getInt32( _VM_T_LeakCheck ) } );
                     } );
         }

@@ -249,7 +249,7 @@ namespace lart::abstract
         return create_call_after( point, callable, llvm::None );
     }
 
-    static inline Functions resolve_call( const llvm::CallSite &call );
+    static inline Functions resolve_call( llvm::CallBase &call );
 
     static bool is_faultable( llvm::Instruction * inst ) noexcept
     {
@@ -282,16 +282,16 @@ namespace lart::abstract
             if ( auto tag = meta::abstract::get( inst ) )
                 return is_memory_operation( tag );
 
-        return llvm::CallSite( inst ) && inst->getMetadata( meta::tag::operation::faultable );
+        return llvm::isa< llvm::CallBase >( inst ) && inst->getMetadata( meta::tag::operation::faultable );
     }
 
     template< typename Call >
     auto arguments( Call call ) noexcept
     {
-        auto cs = llvm::CallSite( call );
-        ASSERT( cs );
+        auto *cb = llvm::cast< llvm::CallBase >( call );
+        ASSERT( cb );
 
-        return query::query( cs.args() )
+        return query::query( cb->args() )
             .map( [] ( auto & use ) { return use.get(); } )
             .freeze();
     }
@@ -338,9 +338,9 @@ namespace lart::abstract
 
     Functions resolve_function( llvm::Module *m, llvm::Value *fn );
 
-    static inline Functions resolve_call( const llvm::CallSite &call )
+    static inline Functions resolve_call( llvm::CallBase &call )
     {
-        return resolve_function( call.getInstruction()->getModule(), call.getCalledValue() );
+        return resolve_function( call.getModule(), call.getCalledOperand() );
     }
 
     template< typename Y >
@@ -364,7 +364,7 @@ namespace lart::abstract
                 each_call( fn, f, u, seen );
 
         else if ( util::is_one_of< llvm::CallInst, llvm::InvokeInst >( val ) )
-            for ( auto callee : resolve_call( llvm::CallSite( val ) ) )
+            for ( auto callee : resolve_call( llvm::cast< llvm::CallBase >( *val ) ) )
                 if ( callee == fn )
                 {
                     if ( auto invoke = llvm::dyn_cast< llvm::InvokeInst >( val ) )

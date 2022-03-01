@@ -16,7 +16,7 @@ namespace lart::divine
             return;
 
         for ( auto cs : _choose->users() )
-            _chooses.emplace_back( cs );
+            _chooses.emplace_back( llvm::cast< llvm::CallBase > ( cs ) );
 
         assign_indices();
     }
@@ -27,24 +27,23 @@ namespace lart::divine
 
         int index = 0;
         for ( auto & ch : _chooses ) {
-            auto call = ch.getInstruction();
-            llvm::IRBuilder<> irb( call );
+            llvm::IRBuilder<> irb( ch );
 
-            ASSERT( ch.getNumArgOperands() == 1 );
+            ASSERT( ch->getNumArgOperands() == 1 );
 
             std::vector< llvm::Value * > args;
-            args.push_back( ch.getArgument( 0 ) );
+            args.push_back( ch->getArgOperand( 0 ) );
             args.push_back( llvm::ConstantInt::get( i32Ty, index ) );
 
             index += 65536; // 2^16 is upper bound on number of choices
 
             auto indexed = irb.CreateCall( _choose, args );
-            indexed->copyMetadata( *call );
-            call->replaceAllUsesWith( indexed );
+            indexed->copyMetadata( *ch );
+            ch->replaceAllUsesWith( indexed );
         }
 
         for ( auto & ch : _chooses )
-            ch.getInstruction()->eraseFromParent();
+            ch->eraseFromParent();
     }
 
     PassMeta coverage() {

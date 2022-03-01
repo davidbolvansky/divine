@@ -46,7 +46,7 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/Support/raw_os_ostream.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/FileSystem.h>
-#include <llvm/IR/CallSite.h>
+#include <llvm/IR/AbstractCallSite.h>
 
 #ifdef DIVINE_RELAX_WARNINGS
 DIVINE_UNRELAX_WARNINGS
@@ -284,8 +284,8 @@ inline int intrinsic_id( ::llvm::Value *v )
     auto insn = ::llvm::dyn_cast< ::llvm::Instruction >( v );
     if ( !insn || insn->getOpcode() != ::llvm::Instruction::Call )
         return ::llvm::Intrinsic::not_intrinsic;
-    ::llvm::CallSite CS( insn );
-    auto f = CS.getCalledFunction();
+    auto *CB = ::llvm::cast< ::llvm::CallBase >( insn );
+    auto f = CB->getCalledFunction();
     if ( !f )
         return ::llvm::Intrinsic::not_intrinsic;
     return f->getIntrinsicID();
