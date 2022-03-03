@@ -46,7 +46,7 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/Support/raw_os_ostream.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/FileSystem.h>
-#include <llvm/IR/AbstractCallSite.h>
+#include <llvm/IR/CallSite.h>
 
 #ifdef DIVINE_RELAX_WARNINGS
 DIVINE_UNRELAX_WARNINGS
@@ -163,7 +163,7 @@ void enumerateAnnos( ::llvm::Module &m, Yield &&yield ) {
                            .template cast< ::llvm::GlobalVariable >().operand( 0 )
                            .template cast< ::llvm::ConstantDataArray >()
                            .freeze();
-                yield( val, Annotation( anno->getAsCString().str() ) );
+                yield( val, Annotation( anno->getAsCString() ) );
             }
         }
     }
@@ -244,7 +244,7 @@ inline void writeModule( ::llvm::Module *m, std::string out ) {
     verifyModule( *m );
     std::error_code serr;
     brq::create_file( out );
-    ::llvm::raw_fd_ostream fs( out.c_str(), serr, ::llvm::sys::fs::OF_None );
+    ::llvm::raw_fd_ostream fs( out.c_str(), serr, ::llvm::sys::fs::F_None );
     if ( serr )
         _throwLLVMError( serr );
     WriteBitcodeToFile( *m, fs );
@@ -284,8 +284,8 @@ inline int intrinsic_id( ::llvm::Value *v )
     auto insn = ::llvm::dyn_cast< ::llvm::Instruction >( v );
     if ( !insn || insn->getOpcode() != ::llvm::Instruction::Call )
         return ::llvm::Intrinsic::not_intrinsic;
-    auto *CB = ::llvm::cast< ::llvm::CallBase >( insn );
-    auto f = CB->getCalledFunction();
+    ::llvm::CallSite CS( insn );
+    auto f = CS.getCalledFunction();
     if ( !f )
         return ::llvm::Intrinsic::not_intrinsic;
     return f->getIntrinsicID();
@@ -304,8 +304,7 @@ namespace llvm
         std::string s;
         raw_string_ostream lstream( s );
         lstream << v;
-        o << lstream.str();
-        return o;
+        return o << lstream.str();
     }
 }
 

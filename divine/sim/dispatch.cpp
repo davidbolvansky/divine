@@ -200,8 +200,8 @@ void CLI::go( command::dot cmd )
     if ( cmd.type == "none" )
         print = dot;
     else {
-        auto r = brick::proc::spawnAndWait( brick::proc::StdinString( dot ) |
-                                            brick::proc::CaptureStdout, "dot", "-T" + cmd.type );
+        auto r = brq::spawn_and_wait( brq::stdin_string( dot ) |
+                                      brq::capture_stdout, "dot", "-T" + cmd.type );
         if ( !r )
             std::cerr << "ERROR: dot failed" << std::endl;
         print = r.out();
@@ -292,7 +292,7 @@ void CLI::go( command::thread thr )
 int CLI::columns()
 {
     struct winsize ws;
-    if ( !isatty( out_fd ) || ioctl( out_fd, TIOCGWINSZ, &ws ) == -1 )
+    if ( out_fd < 0 || !isatty( out_fd ) || ioctl( out_fd, TIOCGWINSZ, &ws ) == -1 )
         return 80;
     return ws.ws_col;
 }
@@ -319,10 +319,10 @@ void CLI::go( command::source src )
                             {
                                 if ( !_pygmentize )
                                     return txt;
-                                auto ansi = brick::proc::spawnAndWait(
-                                    brick::proc::StdinString( txt ) |
-                                    brick::proc::CaptureStdout |
-                                    brick::proc::CaptureStderr,
+                                auto ansi = brq::spawn_and_wait(
+                                    brq::stdin_string( txt ) |
+                                    brq::capture_stdout |
+                                    brq::capture_stderr,
                                     { "pygmentize", "-l", "c++", "-f", "terminal256" } );
                                 if ( ansi.ok() )
                                     return ansi.out();
@@ -341,7 +341,7 @@ void CLI::go( command::setup set )
         _sticky_commands.clear();
     if ( !set.xterm.empty() )
     {
-        brick::proc::XTerm xt;
+        brq::xterm xt;
         xt.open();
         _xterms.emplace( set.xterm, std::move( xt ) );
     }

@@ -43,10 +43,8 @@ namespace brq
         struct module : next {};
     };
 
-    struct s_unit {};
-
     template< typename... comps >
-    using compose_stack = typename compose< comps... >::template module< s_unit >;
+    using compose_stack = typename compose< comps... >::template module< unit >;
 
     template< template< typename... > class mod, typename... x >
     struct module_

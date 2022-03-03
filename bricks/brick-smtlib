@@ -49,6 +49,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <string_view>
+#include <cmath>
 
 namespace brq
 {
@@ -59,7 +60,7 @@ namespace brq
     {
         smtlib_format _fmt;
         int bw = 0;
-        enum type_t { t_bool, t_bv, t_float } type;
+        enum type_t { t_bool, t_bv, t_float, t_array } type;
 
         smtlib_node( int bw, type_t type, smtlib_format &&fmt )
             : _fmt( std::move( fmt ) ), bw( bw ), type( type )
@@ -72,6 +73,7 @@ namespace brq
         constexpr inline bool is_bool() const noexcept { return type == t_bool; }
         constexpr inline bool is_bv() const noexcept { return type == t_bv; }
         constexpr inline bool is_float() const noexcept { return type == t_float; }
+        constexpr inline bool is_array() const noexcept { return type == t_array; }
     };
 
     using smtlib_type = smtlib_node::type_t;
@@ -99,6 +101,7 @@ namespace brq
             case smtlib_node::t_bool: return "bool";
             case smtlib_node::t_bv: return "bv";
             case smtlib_node::t_float: return "float";
+            case smtlib_node::t_array: return "array";
         }
     }
 
@@ -179,6 +182,16 @@ namespace brq
 
         node bitvec( int, brick::data::SmallVector< uint64_t > data );
         node boolT() { return node( 1, node::t_bool, "Bool" ); }
+
+        node typeT( type_t type, int bitwidth )
+        {
+            if ( type == node::t_bv )
+                return bitvecT( bitwidth );
+            if ( type == node::t_float )
+                return floatT( bitwidth );
+            UNREACHABLE( "unsupported type" );
+        }
+
         node bitvecT( int bitwidth )
         {
             ASSERT_LEQ( 0, bitwidth );
@@ -189,6 +202,22 @@ namespace brq
         {
             ASSERT_LEQ( 0, bitwidth );
             return node( bitwidth, node::t_float, "(Float" + std::to_string( bitwidth ) + ")" );
+        }
+
+        node arrayT( type_t type, int value_bw, int index_bw )
+        {
+            ASSERT_LEQ( 0, value_bw );
+            ASSERT_LEQ( 0, index_bw );
+
+            auto values = typeT( type, value_bw );
+            auto indices = bitvecT( index_bw );
+
+            auto fmt = [=]( brq::string_builder &o )
+            {
+                o << "(Array " << values << " " << indices << ")";
+            };
+
+            return node( value_bw, type, fmt );
         }
 
         node bitvec( int bw, uint64_t val )
@@ -334,6 +363,68 @@ namespace brq
             return node( t.bw, t.type, fmt );
         }
 
+        node select( node array, node offset, int bw )
+        {
+            auto fmt = [=]( brq::string_builder &o )
+            {
+                o << "(select " << array << " " << offset << ")";
+            };
+            return node( bw, array.type, fmt ); // FIXME loaded type
+        }
+
+        node store( node array, node offset, node value, int bw )
+        {
+            auto fmt = [=]( brq::string_builder &o )
+            {
+                o << "(store " << array << " " << offset << " " << value << ")";
+            };
+            return node( bw, array.type, fmt );
+        }
+
+        static constexpr auto rounding_mode = smtlib_rounding::RNE;
+
+        inline std::string to_fp_bitwidth( size_t bw )
+        {
+            switch ( bw )
+            {
+                case 16: return "5 11";
+                case 32: return "8 24";
+                case 64: return "11 53";
+                default: UNREACHABLE( "Unsupported bitwidth." );
+            }
+        }
+
+        template < bool _unsigned >
+        inline std::string fp_to_bv_pref()
+        {
+            std::string pref = "(_ fp.to_";
+            if constexpr ( _unsigned )
+                return pref + "ubv ";
+            return pref + "sbv ";
+        }
+
+        template< bool _unsigned >
+        inline node fp_to_bv_cast( int bw, const node & arg )
+        {
+            auto fmt = [=]( brq::string_builder &o )
+            {
+                o << fp_to_bv_pref< _unsigned >() << bw << ") " << to_string( rounding_mode )
+                  << " " << arg << "(_ BitVec " << bw << ") )";
+            };
+            return node( bw, node::t_bv, fmt );
+        }
+
+        template< bool _unsigned >
+        inline node bv_to_fp_cast( int bw, const node & arg )
+        {
+            auto fmt = [=]( brq::string_builder &o )
+            {
+                o << "(" << to_fp( bw ) << " " << to_string( rounding_mode )
+                  << " " << arg << "(_ FloatingPoint " << to_fp_bitwidth( bw ) << "))";
+            };
+            return node( bw, node::t_float, fmt );
+        }
+
         node cast( smt_op op, int bw, const node & arg )
         {
             if ( op == smt_op::fp_ext || op == smt_op::fp_trunc )
@@ -344,6 +435,26 @@ namespace brq
                     o << "(" << to_fp( bw ) << " " << to_string( mode ) << " " << arg << " )";
                 };
                 return node( bw, node::t_float, fmt );
+            }
+
+            if ( op == smt_op::fp_toubv )
+            {
+                return fp_to_bv_cast< true /* unsigned */ >( bw, arg );
+            }
+
+            if ( op == smt_op::fp_tosbv )
+            {
+                return fp_to_bv_cast< false /* signed */ >( bw, arg );
+            }
+
+            if ( op == smt_op::bv_utofp )
+            {
+                return bv_to_fp_cast< true /* unsigned */ >( bw, arg );
+            }
+
+            if ( op == smt_op::bv_stofp )
+            {
+                return bv_to_fp_cast< false /* signed */ >( bw, arg );
             }
 
             NOT_IMPLEMENTED();
@@ -405,8 +516,24 @@ namespace brq
     inline smtlib_node smtlib_context::floatv( int bitwidth, double val, smtlib_rounding mode )
     {
         static_assert( sizeof( double ) == sizeof( uint64_t ) );
-        return node( bitwidth, node::t_float, format( "(", to_fp( bitwidth ), " ", to_string( mode ),
-                                                      " ", val, " )" ).buffer() );
+
+        auto sign = [] ( auto v ) { return std::signbit( v ) ? "-" : "+"; };
+
+        switch( std::fpclassify( val ) )
+        {
+            case FP_INFINITE:
+                return node( bitwidth, node::t_float
+                    , format( "(_", sign( val ), "oo ", to_fp_bitwidth( bitwidth ), ")" ).buffer() );
+            case FP_NAN:
+                return node( bitwidth, node::t_float
+                    , format( "(_ NaN ", to_fp_bitwidth( bitwidth ), ")" ).buffer() );
+            case FP_ZERO:
+                return node( bitwidth, node::t_float
+                    , format( "(_", sign( val ), "zero ", to_fp_bitwidth( bitwidth ), ")" ).buffer() );
+            default:
+                return node( bitwidth, node::t_float
+                    , format( "(", to_fp( bitwidth ), " ", to_string( mode ), " ", val, " )" ).buffer() );
+        }
     }
 
     inline smtlib_node smtlib_context::bitvec( int bitwidth, brick::data::SmallVector< uint64_t > data )

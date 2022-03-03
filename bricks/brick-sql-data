@@ -1,0 +1,851 @@
+// -*- mode: C++; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+
+/*
+ * Copyright (C) 2019 Petr Rockai <code@fixp.eu>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+#pragma once
+#include "brick-assert"
+#include "brick-string"
+#include "brick-cons"
+#include "brick-except"
+
+#include <memory>
+#include <vector>
+#include <set>
+#include <cxxabi.h>
+#include <codecvt>
+
+namespace brq::sql
+{
+    template< typename T >
+    std::string_view get_name( char quote = 0 )
+    {
+        static std::string name;
+        if ( name.empty() )
+        {
+            int stat;
+            char *dem = abi::__cxa_demangle( typeid( T ).name(), nullptr, nullptr, &stat );
+            if ( strchr( dem, '<' ) )
+                *strchr( dem, '<' ) = 0;
+            name = strchr( dem, ':' ) ? strrchr( dem, ':' ) + 1 : dem;
+            NOISE( dem, "→", name );
+            std::free( dem );
+            if ( quote )
+                name = quote + name + quote;
+        }
+        return name;
+    }
+
+    template< typename T >
+    std::string_view get_name( T, char quote = 0 ) { return get_name< T >( quote ); }
+
+    struct date
+    {
+        unsigned julian;
+
+        explicit date( int y = 1970, int m = 1, int d = 1 )
+        {
+            if ( m > 2 )
+                m += 1, y += 4800;
+            else
+                m += 13, y += 4799;
+
+            julian = y * 365 - 32167;
+            julian += y / 4 - y / 100 + y / 400;
+            julian += 7834 * m / 256 + d;
+        }
+
+        std::tuple< int, int, int > decompose()
+        {
+            unsigned j = julian + 32044;
+            unsigned quad = j / 146097;
+            unsigned extra = (j - quad * 146097) * 4 + 3;
+
+            j += 60 + quad * 3 + extra / 146097;
+            quad = j / 1461;
+            j -= quad * 1461;
+            int y = j * 4 / 1461;
+            j = ((y != 0) ? ((j + 305) % 365) : ((j + 306) % 366)) + 123;
+            y += quad * 4;
+            quad = j * 2141 / 65536;
+
+            return { y - 4800, (quad + 10) % 12 + 1, j - 7834 * quad / 256 };
+        }
+
+        friend string_builder &operator<<( string_builder &s, date v )
+        {
+            auto [ y, m, d ] = v.decompose();
+            return s << y << "-" << pad( 2, '0' ) << m << mark << "-" << pad( 2, '0' ) << d << mark;
+        }
+    };
+
+    struct time { std::int16_t hour, min, sec; };
+
+    struct timestamp
+    {
+        std::int64_t fract = 0;
+
+        static timestamp from_unix( time_t t ) { return { ( int64_t( t ) - 946684800 ) * 1000000 }; }
+        static timestamp future() { return from_unix( 365 * 24 * 3600 * 200L ); };
+        time_t to_unix() const { return fract / 1000000 + 946684800; }
+        bool operator<( timestamp o ) const { return fract < o.fract; }
+        bool operator==( timestamp o ) const { return fract == o.fract; }
+
+        struct tm to_localtime() const
+        {
+            struct tm tm;
+            auto t = to_unix();
+            localtime_r( &t, &tm );
+            return tm;
+        }
+
+        struct tm to_gmtime() const
+        {
+            struct tm tm;
+            auto t = to_unix();
+            gmtime_r( &t, &tm );
+            return tm;
+        }
+
+        std::string to_string( const char *fmt = "%Y-%m-%d %H:%M %Z", bool utc = false ) const
+        {
+            char buf[200];
+            auto tm = utc ? to_gmtime() : to_localtime();
+            strftime( buf, 200, fmt, &tm );
+            return buf;
+        }
+
+        friend auto &operator<<( brq::string_builder &s, timestamp ts )
+        {
+            return s << ts.to_string( "%Y-%m-%d %H:%M:%S %Z", true );
+        }
+    };
+
+    struct interval
+    {
+        std::int64_t seconds; std::int32_t days, months;
+
+        static interval from_seconds( time_t s )
+        {
+            return { s * 1000000, 0, 0 };
+        }
+
+        time_t as_seconds() const
+        {
+            ASSERT_EQ( months, 0 );
+            return time_t( days ) * 3600 * 24 + seconds / 1000000;
+        }
+
+        friend auto &operator<<( brq::string_builder &s, interval i )
+        {
+            return s << i.as_seconds();
+        }
+    };
+
+    template< int scale, typename base_t = int64_t >
+    struct fixnum
+    {
+        base_t value;
+        fixnum( base_t v = 0 ) : value( v * scale ) {}
+        explicit fixnum( double v ) : value( v * scale ) {}
+        fixnum( base_t v, int s ) : value( v ) { ASSERT_EQ( s, scale ); }
+        bool operator==( fixnum o ) const { return value == o.value; }
+        bool operator<( fixnum o ) const { return value < o.value; }
+        bool operator>( fixnum o ) const { return value > o.value; }
+        bool operator>=( fixnum o ) const { return value >= o.value; }
+        explicit operator bool() const { return value; }
+
+        static parse_result from_string( std::string_view s, fixnum &n )
+        {
+            base_t sign = 1, value = 0, f_scale = scale;
+            bool seen_dot = false;
+
+            if ( !s.empty() && s[ 0 ] == '-' )
+                s.remove_prefix( 1 ), sign = -1;
+
+            for ( size_t off = 0; off < s.size() && f_scale > 1; ++ off )
+                if ( std::isdigit( s[ off ] ) )
+                    value *= 10, value += s[ off ] - '0', f_scale /= seen_dot ? 10 : 1;
+                else if ( s[ off ] == '.' && !seen_dot )
+                    seen_dot = true;
+                else
+                    return no_parse( "unexpected character" );
+
+            for ( ; f_scale > 1 ; f_scale /= 10 ) value *= 10;
+            n.value = sign * value;
+            return {};
+        }
+
+        friend string_builder &operator<<( string_builder &s, fixnum n )
+        {
+            auto fract = n.value % scale;
+            int  whole = n.value / scale;
+            int f_scale = scale;
+            s << ( !whole && fract < 0 ? "-" : "" ) << whole;
+            while ( fract && fract % 10 == 0 )
+                f_scale /= 10, fract /= 10;
+            int pad_count = 0;
+            while ( f_scale > 1 )
+                pad_count += 1, f_scale /= 10;
+            if ( fract )
+                s << "." << pad( pad_count, '0' ) << std::abs( fract ) << mark;
+            return s;
+        }
+
+        friend fixnum abs( fixnum n ) { return fixnum( abs( n.value ), scale ); }
+        fixnum operator+( fixnum n ) const { return fixnum( value + n.value, scale ); }
+        fixnum operator*( int n ) const { return fixnum( value * n, scale ); }
+        fixnum operator/( int n ) const { return fixnum( value / n, scale ); }
+        fixnum operator/( fixnum n ) const { return fixnum( value * scale / n.value, scale ); }
+        int round() const { return value / scale + ( value % scale >= scale / 2 ? 1 : 0 ); }
+    };
+
+    struct category_flags
+    {
+        static constexpr bool is_column   = false;
+        static constexpr bool is_enum     = false;
+        static constexpr bool is_enum_val = false;
+        static constexpr bool is_expr     = false;
+        static constexpr bool is_query    = false;
+        static constexpr bool is_table    = false;
+        static constexpr bool is_view     = false;
+        static constexpr bool is_function = false;
+
+        template< typename self_t >
+        static std::string_view get_name( const self_t &self ) { return sql::get_name( self ); }
+    };
+
+    struct column_flags : category_flags
+    {
+        static constexpr bool is_nullable   = false;
+        static constexpr bool is_primary    = false;
+        static constexpr bool is_foreign    = false;
+        static constexpr bool is_constraint = false;
+        static constexpr bool is_qualified  = false;
+        static constexpr bool is_asc        = false;
+    };
+
+    template< typename T >
+    struct enum_value : category_flags
+    {
+        using type = T;
+        static constexpr bool is_enum = true;
+        static constexpr bool is_enum_val = true;
+
+    };
+
+    template< typename self_t, typename = std::enable_if_t< self_t::is_enum_val > >
+    inline string_builder &operator<<( string_builder &s, const self_t &v )
+    {
+        return s << v.get_name( v );
+    }
+
+    template< typename... vals >
+    struct enum_type : category_flags
+    {
+        using type = enum_type;
+        using values = cons_list_t< vals... >;
+        static constexpr bool is_enum  = true;
+        static constexpr bool is_expr  = true;
+
+        typename values::co _value;
+        template< typename X >
+        enum_type( const X &x ) : _value( x ) {}
+        enum_type() : _value( typename values::car_t() ) {}
+
+        friend string_builder &operator<<( string_builder &s, const enum_type &v )
+        {
+            return s << *v._value.match( []( const auto &d ) { return d.get_name( d ); } );
+        }
+    };
+
+    struct decimal {};
+
+    template< typename T, typename = void > struct type_map {};
+    template<> struct type_map< bool >           { static auto name() { return "bool"; } };
+    template<> struct type_map< short >          { static auto name() { return "smallint"; } };
+    template<> struct type_map< int >            { static auto name() { return "integer"; } };
+    template<> struct type_map< int64_t >        { static auto name() { return "bigint"; } };
+    template<> struct type_map< std::u32string > { static auto name() { return "text"; } };
+    template<> struct type_map< std::u32string_view > { static auto name() { return "text"; } };
+    template<> struct type_map< const char32_t * > { static auto name() { return "text"; } };
+    template<> struct type_map< std::string >    { static auto name() { return "bytea"; } };
+    template<> struct type_map< std::string_view > { static auto name() { return "bytea"; } };
+    template<> struct type_map< const char * >   { static auto name() { return "bytea"; } };
+    template<> struct type_map< char * >         { static auto name() { return "bytea"; } };
+    template<> struct type_map< date >           { static auto name() { return "date"; } };
+    template<> struct type_map< time >           { static auto name() { return "time"; } };
+    template<> struct type_map< timestamp >      { static auto name() { return "timestamp"; }; };
+    template<> struct type_map< interval >       { static auto name() { return "interval"; }; };
+    template<> struct type_map< decimal >        { static auto name() { return "decimal"; }; };
+
+    template< typename T > struct type_map< std::optional< T > > : type_map< T > {};
+
+    template< typename T, int v > struct type_map< fixnum< v, T > >
+    {
+        static auto name() { return type_map< T >::name(); }
+    };
+
+    template< size_t v > struct type_map< std::array< uint8_t, v > >
+    {
+        static auto name() { return "bytea"; }
+    };
+
+    template< typename T > struct type_map< T, std::enable_if_t< T::is_enum > >
+    {
+        static auto name()
+        {
+            if constexpr ( T::is_enum_val )
+                return T::type::get_name( typename T::type() );
+            else
+                return T::get_name( T() );
+        }
+    };
+
+    template< typename T > auto sql_type()
+    {
+        return brq::sql::type_map< T >::name();
+    }
+
+    template< typename T >           struct is_array                          : std::false_type {};
+    template< typename T >           struct is_set                            : std::false_type {};
+    template< typename T >           struct is_optional                       : std::false_type {};
+    template< typename T >           struct is_fixnum                         : std::false_type {};
+    template< typename T, typename > struct is_expr                           : std::false_type {};
+    template< typename T, typename > struct is_enum                           : std::false_type {};
+
+    template< typename T, size_t s > struct is_array< std::array< T, s > >    : std::true_type {};
+    template< typename T >           struct is_set< std::set< T > >           : std::true_type {};
+    template< typename T >           struct is_optional< std::optional< T > > : std::true_type {};
+    template<>                       struct is_optional< std::nullopt_t >     : std::true_type {};
+    template< typename T, int i >    struct is_fixnum< fixnum< i, T > >       : std::true_type {};
+
+    template< typename T > struct is_expr< T, std::enable_if_t< T::is_expr || T::is_enum > >
+            : std::true_type {};
+    template< typename T > struct is_enum< T, std::enable_if_t< T::is_enum > > : std::true_type {};
+
+    template< typename T > constexpr bool is_expr_v = is_expr< T, void >::value;
+    struct where_operator { const char *sql; where_operator( const char *s = "" ) : sql( s ) {} };
+
+    template< typename T >
+    static constexpr bool is_value = ( std::is_convertible_v< T, std::string_view > ||
+                                       std::is_convertible_v< T, std::u32string_view > ||
+                                       std::is_convertible_v< T, timestamp > ||
+                                       std::is_convertible_v< T, interval > ||
+                                       is_array< T >::value ||
+                                       is_fixnum< T >::value ||
+                                       is_enum< T, void >::value ||
+                                       std::is_convertible_v< T, int > ) && !is_list_v< T >;
+
+    template< typename T, bool _nullable = false >
+    struct column : column_flags
+    {
+        template< typename self_t >
+        static std::string_view get_name( const self_t &self ) { return sql::get_name( self, '"' ); }
+
+        using type = std::conditional_t< _nullable, std::optional< T >, T >;
+        using base_type = T;
+        using bare = void;
+        using table = void;
+        using qualifier = void;
+
+        static constexpr bool is_nullable = _nullable;
+        static constexpr bool is_expr     = true;
+        static constexpr bool is_column   = true;
+    };
+
+    template< typename T, bool call = false >
+    struct constant : column< T, false >
+    {
+        static constexpr const bool is_function = true;
+
+        template< typename self_t >
+        static std::string_view get_name( const self_t &self ) { return sql::get_name( self ); }
+
+        template< typename stream >
+        void print( stream &s, int & ) const
+        {
+            if ( call )
+                s << "()";
+            if constexpr ( !std::is_same_v< T, void > )
+                s << "::" << sql_type< T >();
+        }
+
+        template< typename stmt > void bind( stmt &s ) const {}
+    };
+
+    template< typename col >
+    struct nullable : col
+    {
+        using type = std::optional< typename col::type >;
+        static constexpr bool is_nullable = true;
+    };
+
+    template< typename T >
+    using unqualify = std::conditional_t< T::is_qualified, typename T::bare, T >;
+
+    template< typename tab, typename col, bool _nullable = false >
+    struct foreign_key : col
+    {
+        using column = col;
+        using table = tab;
+        using base_type = typename col::type;
+        static constexpr bool adds_null = _nullable && !col::is_nullable;
+        using type = std::conditional_t< adds_null, std::optional< base_type >, base_type >;
+        static constexpr bool is_nullable = _nullable;
+        static constexpr bool is_foreign = true;
+    };
+
+    template< typename col >
+    struct primary_key : col
+    {
+        template< typename CT >
+        static std::string_view get_name( const CT & ) { return col::get_name( col() ); }
+
+        using base = col;
+        static constexpr bool is_primary = true;
+    };
+
+    template< typename... cols >
+    struct unique : column_flags
+    {
+        using columns = cons_list_t< cols... >;
+        static constexpr bool is_constraint = true;
+    };
+
+    template< typename T, typename = void > struct is_constraint_ : std::false_type {};
+    template< typename T >
+    struct is_constraint_< T, std::enable_if_t< T::is_constraint > > : std::true_type {};
+    template< typename T > using is_constraint  = is_constraint_< T >;
+    template< typename T > using not_constraint = std::negation< is_constraint< T > >;
+
+    template< typename T > struct is_primary { static constexpr bool value = T::is_primary; };
+
+    template< typename... > struct with_columns;
+
+    template< typename col, typename... cols >
+    struct with_columns< col, cols... >
+    {
+        using all         = std::conditional_t< is_list_v< col >, col, cons_list_t< col, cols... > >;
+        using columns     = typename all::template filter_t< not_constraint >;
+        using constraints = typename all::template filter_t< is_constraint >;
+        using columns_t   = columns;
+    };
+
+    template<> struct with_columns<>
+    {
+        using all         = cons_list_t<>;
+        using columns     = all;
+        using constraints = all;
+        using columns_t   = columns;
+    };
+
+    template< typename... cols >
+    struct relation : with_columns< cols... >
+    {
+        template< typename self_t >
+        static std::string_view declare( const self_t &self )
+        {
+            static std::string decl( format( "\"", sql::get_name( self ), "\"" ).data() );
+            return decl;
+        }
+    };
+
+    template< typename... cols > struct table : relation< cols... >, category_flags
+    {
+        static constexpr bool is_table = true;
+    };
+
+    template< typename... > struct select;
+
+    template< typename... cols >
+    struct view : relation< cols... >, category_flags
+    {
+        static constexpr bool is_view         = true;
+        static constexpr bool is_updatable    = false;
+        static constexpr bool is_materialized = false;
+        static constexpr bool is_trigger      = false;
+
+        static auto select() { return sql::select< cols... >(); }
+    };
+
+    template< typename... cols >
+    struct updatable_view : view< cols... >
+    {
+        static constexpr bool is_updatable = true;
+    };
+
+    template< typename... cols >
+    struct materialized_view : view< cols... >
+    {
+        static constexpr bool is_materialized = true;
+    };
+
+    template< typename... cols >
+    struct trigger_view : view< cols... >
+    {
+        static constexpr bool is_trigger = true;
+    };
+
+    template< typename... tables_ >
+    struct schema : cons_list_t< tables_... > {};
+
+    template< typename stream, typename list >
+    void print_list( stream &s, list l,
+                     const char *delim = ", ", const char *start = "", const char *end = "" )
+    {
+        bool first = true;
+        s << start;
+        l.each( [&]( const auto &c ) { s << ( first ? "" : delim ) << c; first = false; } );
+        s << end;
+    }
+
+    template< typename stream, typename list >
+    void print_columns( stream &s, list l, const char *start = "", const char *end = "" )
+    {
+        print_list( s, l.map( [&]( auto c ) { return c.get_name( c ); } ), ", ", start, end );
+    }
+
+    template< typename T, typename X = void >
+    struct get_key { using type = X; };
+
+    template< typename T >
+    struct get_key< T, decltype( typename T::car_t(), void(0) ) >
+    {
+        using type = typename T::car_t::base;
+    };
+
+    template< typename txn_t, typename table >
+    std::enable_if_t< table::is_table > drop( txn_t &t, table )
+    {
+        t.exec() << "drop table if exists \"" << table::get_name( table() ) << "\" cascade";
+    };
+
+    template< typename txn_t, typename enum_t >
+    std::enable_if_t< enum_t::is_enum > drop( txn_t &t, enum_t )
+    {
+        t.exec() << "drop type if exists \"" << enum_t::get_name( enum_t() ) << "\" cascade";
+    };
+
+    struct pg_views : table<> {};
+    struct pg_matviews : table<> {};
+    struct viewname : column< std::string > {};
+    struct matviewname : column< std::string > {};
+
+    template< typename txn_t, typename view >
+    std::enable_if_t< view::is_view > drop( txn_t &t, view v, bool cascade = false )
+    {
+        for ( auto _ : t.template select< viewname >().template from< pg_views >()
+                        .where( viewname() == v.get_name( v ) ).exec() )
+            t.exec() << "drop view \"" << v.get_name( v ) << ( cascade ? "\" cascade" : "\"" );
+        for ( auto _ : t.template select< matviewname >().template from< pg_matviews >()
+                        .where( matviewname() == v.get_name( v ) ).exec() )
+            t.exec() << "drop materialized view \"" << v.get_name( v )
+                     << ( cascade ? "\" cascade" : "\"" );
+        if constexpr ( view::is_trigger )
+            t.exec() << "drop table if exists \"" << v.get_name( v )
+                     << ( cascade ? "\" cascade" : "\"" );
+    };
+
+    template< typename txn_t, typename enum_t >
+    std::enable_if_t< enum_t::is_enum > create( txn_t &txn, enum_t )
+    {
+        string_builder s;
+        s << "do $$ begin if not exists (select * from pg_type where pg_type.typname = '"
+          << enum_t::get_name( enum_t() ) << "') then create type \""
+          << enum_t::get_name( enum_t() ) << "\" as enum ";
+        print_list( s, typename enum_t::values().map( [&]( auto c ) { return c.get_name( c ); } ),
+                    "', '", "('", "')" );
+        s << "; end if; end; $$";
+        txn.exec( s.buffer() );
+    }
+
+    enum class lifetime { persistent, session, transaction, view };
+    enum class trigger_when { before_insert, after_insert, before_update, after_update };
+
+    template< typename tab_t, typename txn_t >
+    auto create_trigger( txn_t &txn, tab_t tab, std::string name, trigger_when when,
+                         std::string_view body )
+    {
+        std::string tab_str( tab_t::get_name( tab_t() ) );
+        std::string when_str;
+        name = tab_str + "_" + name;
+
+        switch ( when )
+        {
+            case trigger_when::before_insert: when_str = "before insert"; break;
+            case trigger_when::before_update: when_str = "before update"; break;
+            case trigger_when::after_insert:  when_str = "after insert";  break;
+            case trigger_when::after_update:  when_str = "after update";  break;
+            default: UNREACHABLE( "impossible trigger_when value" );
+        }
+
+        txn.exec() << "create or replace function " << name <<  "_fun() returns trigger as $$ "
+                   << body << " ; $$ language plpgsql security definer volatile";
+
+        txn.exec() << "drop trigger if exists " << name << " on " << tab_str;
+        txn.exec() << "create trigger " << name << " " << when_str << " on " << tab_str << " "
+                   << "for each row execute function " << name << "_fun()";
+    };
+
+    template< typename txn_t, typename tab_t, typename query_t >
+    std::enable_if_t< query_t::is_query > create_trigger( txn_t &txn, tab_t tab, std::string name,
+                                                          trigger_when when, query_t q )
+    {
+        string_builder s;
+        int id = -1;
+        s << "begin ";
+        q.print( s, id );
+        s << "; return new; end";
+        return create_trigger( txn, tab, name, when, s.data() );
+    };
+
+    template< typename txn_t, typename table >
+    void create_table( txn_t &txn, table, lifetime l )
+    {
+        auto tabname = table::get_name( table() );
+        txn.exec() << "create " << ( l == lifetime::persistent || l == lifetime::view ? "" : "temp " )
+                   << "table if not exists \"" << tabname << "\" () "
+                   << ( l == lifetime::transaction ? " on commit delete rows;" : ";" );
+        int c_num = 0;
+        auto alter = [&] { return std::move( txn.exec() << "alter table \"" << tabname << "\" " ); };
+        auto constraint = [&]
+        {
+            return std::move( alter() << "add constraint " << tabname << "_c" << c_num++ << " " );
+        };
+
+        for ( int i = 0; i < 8; ++i )
+            alter() << "drop constraint if exists " << tabname << "_c" << i << " cascade";
+
+        auto print_col = [&]( auto col )
+        {
+            using col_t = decltype( col );
+
+            if constexpr ( col.is_constraint )
+            {
+                auto ex = std::move( constraint() << "unique " );
+                print_columns( ex, typename col_t::columns(), "( ", " )" );
+            }
+            else
+            {
+                using type = typename col_t::base_type;
+                bool use_serial = col.is_primary && std::is_integral_v< type > && !col.is_foreign;
+                auto typestr = sql_type< type >();
+                auto seqname = std::string( tabname ) + "_pkey_seq";
+                auto colname = col.get_name( col );
+
+                alter() << "add column if not exists " << colname << " " << typestr
+                        << " default '" << type() << "'"; /* TODO make configurable! */
+                alter() << "alter column " << colname << " drop default";
+                alter() << "alter column " << colname << " type " << typestr;
+
+                if ( col.is_primary )
+                    constraint() << "primary key ( " << colname << " )";
+
+                if ( use_serial )
+                {
+                    txn.exec() << "create sequence if not exists " << seqname << " owned by "
+                               << tabname << "." << colname;
+                    alter() << "alter column " << colname << " set default nextval('" << seqname << "')";
+                }
+
+                if constexpr ( col.is_foreign )
+                {
+                    auto foreign_col = typename col_t::column();
+                    auto foreign_tab = typename col_t::table();
+                    if ( l == lifetime::persistent || l == lifetime::view )
+                        constraint()
+                            << "foreign key ( " << colname << " )"
+                            << " references \"" << foreign_tab.get_name( foreign_tab )
+                            << "\" ( " << foreign_col.get_name( foreign_col ) << " )"
+                            << ( l == lifetime::view ? " on delete cascade" : "" );
+                }
+
+                alter() << "alter column " << colname << " "
+                        << ( col.is_nullable ? "drop" : "set" ) << " not null";
+            }
+        };
+
+        typename table::all().each( print_col );
+    }
+
+    template< typename txn_t, typename table >
+    std::enable_if_t< table::is_table > create( txn_t &txn, table t, lifetime l = lifetime::persistent )
+    {
+        return create_table( txn, t, l );
+    }
+
+    struct current_schema : constant< std::string, true > {};
+
+    template< typename txn_t, typename view >
+    std::enable_if_t< view::is_materialized > create_refresh( txn_t &txn, view v )
+    {
+        string_builder q_str;
+        auto q = view::trigger();
+        int id = -1;
+        q.set_skip_select();
+        q.print( q_str, id );
+
+        auto [ schema ] = txn.template select< current_schema >().exec().result();
+
+        auto token   = format( v.get_name( v ), "_token" ),
+             refresh = format( v.get_name( v ), "_refresh" );
+
+        txn.exec() << "drop table if exists " << token;
+        txn.exec() << "create table " << token << " ( token ) as select " << q_str;
+        txn.exec() << "alter table " << token << " add unique( token )";
+        txn.exec() << "create or replace procedure " << refresh
+                   << "() security definer language plpgsql set search_path to " << schema
+                   << " as $$ "
+                   << "declare _updated_  " << token << "; "
+                   << "        _previous_ " << token << "; "
+                   << "begin select into strict _updated_ " << q_str << "; "
+                   << "      select into strict _previous_ * from " << token << "; "
+                   << " if _updated_ != _previous_ then "
+                   << "  update " << token << " set token = _updated_.token ; "
+                   << "  refresh materialized view \"" << v.get_name( v ) << "\"; "
+                   << " end if; end; $$";
+    }
+
+    template< typename txn_t, typename view, typename query >
+    std::enable_if_t< view::is_view && query::is_query >
+    create( txn_t &txn, view v, query q, bool as_temp = false )
+    {
+        using cols = typename view::columns::template map_t< unqualify >;
+        string_builder s;
+        int id = -1;
+
+        if constexpr ( view::is_trigger )
+        {
+            create_table( txn, v, lifetime::view );
+            v.triggers( txn );
+            txn.exec( v.insert( true ) );
+        }
+        else
+        {
+            s << ( view::is_materialized ? "create materialized view " :
+                   as_temp               ? "create temp table " :
+                                           "create view " )
+              << "\"" << v.get_name( v ) << "\" ";
+
+            if ( !cols::empty )
+                print_columns( s, cols(), "( ", " )" );
+
+            s << ( view::is_materialized || view::is_trigger ? " as " :
+                   as_temp ? " on commit drop as " : " with ( security_barrier ) as " );
+
+            q.print( s, id );
+
+            if ( view::is_updatable )
+                s << " with check option";
+            txn.exec( s.buffer() );
+        }
+
+        int i = 0;
+
+        auto mkidx = [&]( auto c )
+        {
+            if constexpr ( decltype( c )::is_constraint )
+            {
+                string_builder b;
+                b << "create unique index " << v.get_name( v ) << "_c" << i++
+                  << " on \"" << v.get_name( v ) << "\" ";
+                print_columns( b, typename decltype( c )::columns(), "( ", " )" );
+                txn.exec( b.data() );
+            }
+        };
+
+        if constexpr ( view::is_materialized )
+        {
+            create_refresh( txn, v );
+            cols().each( mkidx );
+        }
+    }
+
+    template< typename txn_t, typename view >
+    std::enable_if_t< view::is_view && !view::columns::empty >
+    create( txn_t &txn, view v, bool as_temp = false )
+    {
+        create( txn, v, view::construct(), as_temp );
+    }
+
+    template< typename txn_t, typename view >
+    std::enable_if_t< view::is_view && view::columns::empty > create( txn_t &txn, view v )
+    {
+        create( txn, v, txn.select().where( false ) );
+    }
+
+    template< typename txn_t, typename view >
+    std::enable_if_t< view::is_view > materialize( txn_t &txn, view v )
+    {
+        std::string get_name( v.get_name( v ) );
+        txn.exec( "create temp table \"" + get_name + "\" on commit drop as select * from " + get_name );
+    }
+
+    template< typename txn_t, typename schema >
+    void initdb( txn_t &txn, schema s, bool clear = false )
+    {
+        if ( clear )
+            s.reverse().each( [&]( auto t ) { drop( txn, t ); } );
+        s.each( [&]( auto t ) { create( txn, t ); } );
+    }
+
+    template< typename txn_t, typename schema_t >
+    void init_refresh( txn_t &txn, schema_t s )
+    {
+        string_builder b;
+        auto [ schema ] = txn.template select< current_schema >().exec().result();
+
+        auto hdr = [ &b, schema = schema ]( auto get_name )
+        {
+            b << "create or replace procedure " << get_name << "() language sql "
+                 "security definer set search_path to " << schema << " as $$\n";
+        };
+
+        auto if_materialized = [&]( auto p )
+        {
+            return [ p ]( auto v )
+            {
+                if constexpr ( v.is_view )
+                    if constexpr ( v.is_materialized )
+                        return p( v );
+            };
+        };
+
+        auto call_refresh = [&]( auto v ) { b << "call " << v.get_name( v ) << "_refresh();\n"; };
+        auto force_refresh = [&]( auto v )
+        {
+            b << "refresh materialized view \"" << v.get_name( v ) << "\";\n";
+        };
+
+        hdr( "refresh_materialized_views" );
+        s.each( if_materialized( call_refresh ) );
+        b << "$$";
+        txn.exec( b.data() );
+        b.clear();
+
+        hdr( "rebuild_materialized_views" );
+        s.each( if_materialized( force_refresh ) );
+        b << "$$";
+        txn.exec( b.data() );
+    }
+}
+
+namespace brq
+{
+    template< typename... args >
+    using sql_schema      = sql::schema< args... >;
+}

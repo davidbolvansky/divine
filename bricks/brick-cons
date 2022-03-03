@@ -39,16 +39,18 @@ namespace brq
         static constexpr int index_of = -1;
 
         template< template< typename > class f > using map_t = nil;
+        template< template< typename > class f > using filter_t = nil;
         template< typename L >                   using cat_t = L;
 
         template< typename F >     void each( const F & ) const {}
         template< typename F >     nil map( F ) const { return {}; }
-        template< typename... Fs > auto match( Fs... ) { return std::nullopt; }
+        template< typename... Fs > auto match( Fs... ) const { return std::nullopt; }
         template< typename L >     auto cat( const L &l ) const { return l; }
         template< typename T >     static constexpr bool has = false;
 
         template< template< typename > class P >
         constexpr nil filter() const { return {}; }
+        constexpr nil reverse() const { return {}; }
 
         template< typename F, typename... args_t >
         auto apply( const F &f, args_t && ... args ) const
@@ -59,6 +61,17 @@ namespace brq
 
     template< typename, typename > struct cons;
     template< typename, typename > struct ns;
+
+    template< template< typename > class pred_t, typename cons_t >
+    constexpr auto cons_filter( const cons_t &x )
+    {
+        if constexpr ( cons_t::empty )
+            return nil();
+        else if constexpr ( pred_t< typename cons_t::car_t >::value )
+            return make_cons( x.car(), cons_filter< pred_t >( x.cdr() ) );
+        else
+            return cons_filter< pred_t >( x.cdr() );
+    }
 
     template< typename A, typename B >
     auto make_cons( const A &a, const B &b ) { return cons< A, B >( a, b ); }
@@ -121,7 +134,12 @@ namespace brq
 
         template< template< typename > class f >
         using map_t = cons< f< car_t >, typename cdr_t::template map_t< f > >;
-        using unique_t = std::conditional_t< cdr_t::unique_t::template has< car_t >, cdr_t, cons >;
+        using unique_t = std::conditional_t< cdr_t::unique_t::template has< car_t >,
+                                             typename cdr_t::unique_t,
+                                             cons< car_t, typename cdr_t::unique_t > >;
+        template< template< typename > class f >
+        using filter_t = decltype( cons_filter< f >( std::declval< cons >() ) );
+
         template< typename L > using cat_t = cons< car_t, typename cdr_t::template cat_t< L > >;
 
         template< typename F, typename... args_t >
@@ -137,16 +155,18 @@ namespace brq
         }
 
         template< template< typename > class P >
-        constexpr auto filter() const
-        {
-            if constexpr ( P< car_t >::value )
-                return make_cons( car(), cdr().template filter< P >() );
-            else
-                return cdr().template filter< P >();
-        }
+        constexpr auto filter() const { return cons_filter< P >( *this ); }
 
         template< typename F >
         auto map( F f )
+        {
+            auto car_ = f( car() );
+            auto cdr_ = cdr().map( f );
+            return make_cons( car_, cdr_ );
+        }
+
+        template< typename F >
+        auto map( F f ) const
         {
             auto car_ = f( car() );
             auto cdr_ = cdr().map( f );
@@ -161,6 +181,16 @@ namespace brq
 
         cons() = default;
     };
+
+    template< typename F > auto zip( F, nil, nil ) { return nil(); }
+
+    template< typename F, typename A, typename B >
+    auto zip( F f, A a, B b )
+    {
+        auto car_ = f( a.car(), b.car() );
+        auto cdr_ = zip( f, a.cdr(), b.cdr() );
+        return make_cons( car_, cdr_ );
+    }
 
     template< typename D >
     constexpr auto cons_reverse( nil, const D &rev )
@@ -211,14 +241,17 @@ namespace brq
     struct cons_list_t: cons_list_t_< Ts... >
     {
         using cons_list_t_< Ts... >::cons_list_t_;
+        cons_list_t( Ts... ts ) : cons_list_t_< Ts... >( ts... ) {}
     };
 
     static_assert( std::is_same_v< cons_list_t< int, int >::unique_t, cons_list_t_< int > > );
+    static_assert( std::is_same_v< cons_list_t< int, int, int >::unique_t, cons_list_t_< int > > );
 
     template< typename... > using discard_t = void;
     template< typename T, typename = void > struct is_list : std::false_type {};
 
     template<> struct is_list< nil > : std::true_type {};
+    template<> struct is_list< cons_list_t<> > : std::true_type {};
     template< typename T >
     struct is_list< T, discard_t< typename T::car_t, typename T::cdr_t > > : std::true_type {};
 
@@ -287,10 +320,34 @@ namespace brq
                 return cdr.template get< arg_t >();
         }
 
-        auto match() { return std::nullopt; }
+        auto match() const { return std::nullopt; }
 
         template< typename F, typename... Fs >
         auto match( F f, Fs... fs )
+        {
+            if constexpr ( std::is_invocable_v< F, car_t & > )
+            {
+                using R = std::invoke_result_t< F, car_t & >;
+                using R_ = std::conditional_t< std::is_same_v< R, void >, void, std::optional< R > >;
+                if ( _is_car )
+                    return R_( f( car ) );
+                else
+                    return R_( cdr.match( f, fs... ) );
+            }
+            else
+            {
+                using R1 = decltype( match( fs... ) );
+                using R2 = decltype( cdr.match( f, fs... ) );
+                using R = std::conditional_t< std::is_same_v< R1, std::nullopt_t >, R2, R1 >;
+                if ( _is_car )
+                    return R( match( fs... ) );
+                else
+                    return R( cdr.match( f, fs... ) );
+            }
+        }
+
+        template< typename F, typename... Fs >
+        auto match( F f, Fs... fs ) const
         {
             if constexpr ( std::is_invocable_v< F, car_t & > )
             {

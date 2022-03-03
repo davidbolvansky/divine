@@ -122,7 +122,7 @@ namespace brq
 #ifdef BRICKS_NOTHROW_ASSERTS
         assert_failed( assert_failed &&o )
         {
-            ::write( 2, o.buffer(), o._offset );
+            ::write( 2, o.buffer(), o.size() );
             abort();
         }
 #endif
@@ -150,7 +150,7 @@ namespace brq
         assert_failed f( l );
         format_args< true >( " ", f, y... );
         assert_signal( f );
-        trace_fn< true >( 4, l, "assert:", l._statement, y... );
+        // trace_fn< true >( 4, l, "assert:", l._statement, y... );
     }
 
     template< typename... T >
@@ -182,7 +182,7 @@ namespace brq
             assert_signal( f );
         }
 
-        trace_fn< true >( 4, l, "assert:", l._statement, "[", a, op_str, b, "]", args... );
+        // trace_fn< true >( 4, l, "assert:", l._statement, "[", a, op_str, b, "]", args... );
     }
 
     template< typename X >

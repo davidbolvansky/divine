@@ -23,18 +23,8 @@
 #include <brick-assert>
 #include <brick-trace>
 
-namespace brq::impl
+namespace brq
 {
-    /* constants and elementary operations by Leonid Yuriev <leo@yuriev.ru> */
-
-    static const uint64_t prime_0 = UINT64_C( 0xEC99BF0D8372CAAB );
-    static const uint64_t prime_1 = UINT64_C( 0x82434FE90EDCEF39 );
-    static const uint64_t prime_2 = UINT64_C( 0xD4F06DB99D67BE4B );
-    static const uint64_t prime_3 = UINT64_C( 0xBD9CACC22C6E9571 );
-    static const uint64_t prime_4 = UINT64_C( 0x9C06FAF4D023E3AB );
-    static const uint64_t prime_5 = UINT64_C( 0xC060724A8424F345 );
-    static const uint64_t prime_6 = UINT64_C( 0xCB5AF53AE3AAAC31 );
-
     [[gnu::always_inline]] static uint64_t rot64( uint64_t v, unsigned s )
     {
         return ( v >> s ) | ( v << ( 64 - s ) );
@@ -51,6 +41,19 @@ namespace brq::impl
         v *= p;
         return v ^ rot64( v, 41 );
     }
+}
+
+namespace brq::impl
+{
+    /* constants and elementary operations by Leonid Yuriev <leo@yuriev.ru> */
+
+    static const uint64_t prime_0 = UINT64_C( 0xEC99BF0D8372CAAB );
+    static const uint64_t prime_1 = UINT64_C( 0x82434FE90EDCEF39 );
+    static const uint64_t prime_2 = UINT64_C( 0xD4F06DB99D67BE4B );
+    static const uint64_t prime_3 = UINT64_C( 0xBD9CACC22C6E9571 );
+    static const uint64_t prime_4 = UINT64_C( 0x9C06FAF4D023E3AB );
+    static const uint64_t prime_5 = UINT64_C( 0xC060724A8424F345 );
+    static const uint64_t prime_6 = UINT64_C( 0xCB5AF53AE3AAAC31 );
 
     template< bool strict >
     static inline uint64_t tail( const uint64_t *v, unsigned count )
@@ -112,10 +115,10 @@ namespace brq
         void mix()
         {
             const uint64_t u = state[0], v = state[1], w = state[2], x = state[3] + counter;
-            state[1] ^= impl::mux64( w, impl::prime_2 );
-            state[2] ^= impl::mux64( x, impl::prime_1 );
-            state[0] ^= impl::mux64( v, impl::prime_3 );
-            state[3] ^= impl::mux64( u, impl::prime_0 );
+            state[1] ^= mux64( w, impl::prime_2 );
+            state[2] ^= mux64( x, impl::prime_1 );
+            state[0] ^= mux64( v, impl::prime_3 );
+            state[3] ^= mux64( u, impl::prime_0 );
         }
 
         [[gnu::always_inline]] void mix_if_needed()
@@ -128,11 +131,11 @@ namespace brq
         {
             const uint64_t u = state[0], v = state[1], w = state[2], x = state[3] + counter;
             uint64_t a_ = state[0], b_ = state[1], c_ = state[2], d_ = state[3];
-            b_ ^= impl::mux64( w, impl::prime_2 );
-            c_ ^= impl::mux64( x, impl::prime_1 );
-            a_ ^= impl::mux64( v, impl::prime_3 );
-            d_ ^= impl::mux64( u, impl::prime_0 );
-            return impl::mix64( a_ + c_, impl::prime_4 ) + impl::mix64( b_ + d_, impl::prime_5 );
+            b_ ^= mux64( w, impl::prime_2 );
+            c_ ^= mux64( x, impl::prime_1 );
+            a_ ^= mux64( v, impl::prime_3 );
+            d_ ^= mux64( u, impl::prime_0 );
+            return mix64( a_ + c_, impl::prime_4 ) + mix64( b_ + d_, impl::prime_5 );
         }
 
         /* updates: aligned access is aligned with respect to the hash state,
@@ -216,8 +219,23 @@ namespace brq
             }
         }
 
-        template< typename T >
-        std::enable_if_t< std::is_integral_v< T > && sizeof( T ) <= 8 > update_aligned( T v )
+        [[gnu::always_inline]] void update_short( const uint8_t *data, int count )
+        {
+            for ( int i = 0; i < count; ++ i )
+                update_aligned( data[ i ] );
+        }
+
+        [[gnu::always_inline]] void update_short( std::string_view sv )
+        {
+            for ( char c : sv )
+                update_aligned( c );
+        }
+
+        void update_aligned() {}
+        void update() {}
+
+        template< typename T, typename... Ts >
+        std::enable_if_t< std::is_integral_v< T > && sizeof( T ) <= 8 > update_aligned( T v, Ts... vs )
         {
             ASSERT_EQ( counter % sizeof( T ), 0 );
             mix_if_needed();
@@ -225,10 +243,11 @@ namespace brq
             unsigned byte = 8 * ( counter % 8 );
             state[ word ] ^= uint64_t( v ) << byte;
             counter += sizeof( T );
+            update_aligned( vs... );
         }
 
-        template< typename T >
-        std::enable_if_t< std::is_integral_v< T > && sizeof( T ) <= 8 > update( T v )
+        template< typename T, typename... Ts >
+        std::enable_if_t< std::is_integral_v< T > && sizeof( T ) <= 8 > update( T v, Ts... vs )
         {
             auto bytes = reinterpret_cast< const uint8_t * >( &v );
             auto end = bytes + sizeof( T );
@@ -238,6 +257,7 @@ namespace brq
                 update_aligned( *reinterpret_cast< const uint32_t * >( bytes ) ), bytes += 4;
             while ( bytes < end )
                 update_aligned( *bytes++ );
+            update( vs... );
         }
 
         hash_state( uint64_t seed = 0 )
@@ -259,14 +279,21 @@ namespace brq
         return s.hash();
     }
 
-    template< typename T >
-    std::enable_if_t< std::is_integral_v< T > && sizeof( T ) <= 8, hash64_t > hash( T v )
+    static inline hash64_t hash_short( std::string_view sv, hash64_t seed = 0 )
     {
-        hash_state s;
-        s.update_aligned( v );
+        hash_state s( seed );
+        s.update_short( sv );
         return s.hash();
     }
 
+    template< typename... Ts >
+    auto hash( Ts... vs )
+        -> std::enable_if_t< ( ( std::is_integral_v< Ts > && sizeof( Ts ) <= 8 ) && ... ), hash64_t >
+    {
+        hash_state s;
+        s.update_aligned( vs... );
+        return s.hash();
+    }
 }
 
 namespace t_brq

@@ -42,9 +42,44 @@ stp::ASTNode STP::constant( bool v )
     return v ? _stp.ASTTrue : _stp.ASTFalse;
 }
 
-stp::ASTNode STP::variable( int id, int bw )
+stp::ASTNode STP::constant( float )
 {
-    return _stp.CreateSymbol( ( "var_"s + std::to_string( id ) ).c_str(), 0, bw );
+    UNREACHABLE( "STP does not support floating point arithmetic" );
+}
+
+stp::ASTNode STP::constant( double )
+{
+    UNREACHABLE( "STP does not support floating point arithmetic" );
+}
+
+stp::ASTNode STP::variable( int id, brq::smt_op op )
+{
+    auto traits = brq::smt_traits( op );
+    ASSERT( traits.is_integral() );
+
+    return _stp.CreateSymbol( ( "var_"s + std::to_string( id ) ).c_str(), 0, traits.bitwidth );
+}
+
+stp::ASTNode STP::array( int, brq::smt_array_type array )
+{
+    using array_type = brq::smt_array_type::type_t;
+    ASSERT( array.type != array_type::floating );
+    ASSERT( array.type != array_type::array );
+
+    auto name = "arr_"s + std::to_string( array.id );
+    return _stp.CreateSymbol( name.c_str(), 32, array.bitwidth );
+}
+
+stp::ASTNode STP::load( Node arr, Node off, int bw )
+{
+    return _stp.CreateTerm( stp::READ, bw, arr, off );
+}
+
+stp::ASTNode STP::store( Node arr, Node off, Node val, int bw )
+{
+    auto term = _stp.CreateTerm( stp::WRITE, bw, arr, off, val );
+    term.SetIndexWidth(arr.GetIndexWidth());
+    return term;
 }
 
 static bool is_bv( stp::ASTNode n ) { return n.GetType() == stp::BITVECTOR_TYPE; }
@@ -98,7 +133,7 @@ stp::ASTNode STP::extract( Node arg, std::pair< int, int > bounds )
     ASSERT_LT( bw, arg.GetValueWidth() );
 
     return _stp.CreateTerm( stp::BVEXTRACT, bw, arg,
-                            constant( bounds.first ), constant( bounds.second ) );
+                            constant( bounds.second ), constant( bounds.first ) );
 }
 
 stp::ASTNode STP::binary( brq::smt_op op, Node a, Node b, int bw )

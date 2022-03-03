@@ -25,10 +25,9 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/ADT/IntrusiveRefCntPtr.h>
 #include <clang/Basic/DiagnosticOptions.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
-// #include <clang/Tooling/Tooling.h> // ClangTool
+#include <clang/Tooling/Tooling.h> // ClangTool
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
-#include <llvm/Support/VirtualFileSystem.h>
 DIVINE_UNRELAX_WARNINGS
 
 #include <brick-except>
@@ -84,19 +83,24 @@ namespace divine::cc
         void allowIncludePath( std::string path );
 
         std::unique_ptr< llvm::Module > compile( std::string filename,
-                                    FileType type, std::vector< std::string > args );
+                                                 FileType type,
+                                                 std::vector< std::string > args,
+                                                 std::string depfile = "" );
 
-        auto compile( std::string filename, std::vector< std::string > args = { } )
+        auto compile( std::string filename, std::vector< std::string > args = {},
+                      std::string depfile = "" )
         {
-            return compile( filename, typeFromFile( filename ), args );
+            return compile( filename, typeFromFile( filename ), args, depfile );
         }
 
         std::string preprocess( std::string filename,
-                                FileType type, std::vector< std::string > args );
+                                FileType type, std::vector< std::string > args,
+                                std::string depfile = "" );
 
-        std::string preprocess( std::string filename, std::vector< std::string > args = { } )
+        std::string preprocess( std::string filename, std::vector< std::string > args = { },
+                                std::string depfile = "" )
         {
-            return preprocess( filename, typeFromFile( filename ), args );
+            return preprocess( filename, typeFromFile( filename ), args, depfile );
         }
 
         static std::string serializeModule( llvm::Module &m );
@@ -110,7 +114,8 @@ namespace divine::cc
         template< typename CodeGenAction >
         std::unique_ptr< CodeGenAction > cc1( std::string filename,
                                     FileType type, std::vector< std::string > args,
-                                    llvm::IntrusiveRefCntPtr< llvm::vfs::FileSystem > vfs = nullptr );
+                                    llvm::IntrusiveRefCntPtr< llvm::vfs::FileSystem > vfs = nullptr,
+                                    std::string depfile = "" );
 
         llvm::IntrusiveRefCntPtr< VFS > divineVFS;
         llvm::IntrusiveRefCntPtr< llvm::vfs::OverlayFileSystem > overlayFS;

@@ -1,7 +1,7 @@
 // -*- mode: C++; indent-tabs-mode: nil; c-basic-offset: 4 -*-
 
 /*
- * (c) 2016 Petr Ročkai <code@fixp.eu>
+ * (c) 2020 Henrich Lauko <xlauko@mail.muni.cz>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -16,24 +16,33 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <divine/mc/draw.hpp>
-#include <divine/ui/cli.hpp>
+#pragma once
 
-namespace divine {
-namespace ui {
+#include <map>
+#include <string>
+#include <cstdint>
+#include <variant>
 
-void draw::run()
+namespace divine::smt
 {
-    auto dot = mc::draw( bitcode(), _distance, false );
-    auto out = brq::shell_spawn_and_wait( brq::stdin_string( dot ) | brq::capture_stdout, _render );
-    if ( _output == "-" )
-        std::cout << out.out();
-    else
+    struct Model
     {
-        std::ofstream of( _output );
-        of << out.out();
-    }
-}
+        using var = std::string;
+        using value = std::variant< std::uint64_t, double, std::string >;
 
-}
+        std::map< var, value > assignment;
+
+        value& operator[](const var &v) { return assignment[v]; }
+
+        template< typename stream >
+        friend auto operator<<( stream &o, const Model &m )
+            -> decltype( o << "" )
+        {
+            if ( m.assignment.empty() )
+                return o << "empty model";
+            for ( const auto &[name, val] : m.assignment )
+                o << name << ":" << val << "\n";
+            return o;
+        }
+    };
 }

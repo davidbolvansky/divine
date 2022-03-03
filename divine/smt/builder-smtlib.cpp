@@ -33,10 +33,33 @@ SMTLib2::Node SMTLib2::define( Node def )
     return _ctx.define( name, def );
 }
 
-SMTLib2::Node SMTLib2::variable( int id, int bw )
+SMTLib2::Node SMTLib2::array( int id, brq::smt_array_type array_type )
+{
+    auto type = [=] {
+        using array = brq::smt_array_type;
+        switch (array_type.type)
+        {
+            case array::type_t::bitvector: return Node::t_bv;
+            case array::type_t::floating: return Node::t_float;
+            case array::type_t::array: return Node::t_array;
+        }
+    };
+
+    auto name = "arr_" + std::to_string( id );
+    return _ctx.variable(
+        _ctx.arrayT( type(), 32 /* index bitwidth */, array_type.bitwidth ), name
+    );
+}
+
+SMTLib2::Node SMTLib2::variable( int id, brq::smt_op op )
 {
     auto name = "var_" + std::to_string( id );
-    return _ctx.variable( _ctx.bitvecT( bw ), name );
+    auto traits = brq::smt_traits( op );
+    if ( traits.is_integral() )
+        return _ctx.variable( _ctx.bitvecT( traits.bitwidth ), name );
+    else if ( traits.is_float() )
+        return _ctx.variable( _ctx.floatT( traits.bitwidth ), name );
+    UNREACHABLE( "Unsupported variable type." );
 }
 
 SMTLib2::Node SMTLib2::constant( bool v )
@@ -44,9 +67,29 @@ SMTLib2::Node SMTLib2::constant( bool v )
     return v ? _ctx.symbol( 1, Node::t_bool, "true" ) : _ctx.symbol( 1, Node::t_bool, "false" );
 }
 
+SMTLib2::Node SMTLib2::constant( float v )
+{
+    return _ctx.floatv( 32, v );
+}
+
+SMTLib2::Node SMTLib2::constant( double v )
+{
+    return _ctx.floatv( 64, v );
+}
+
 SMTLib2::Node SMTLib2::constant( uint64_t value, int bw )
 {
     return _ctx.bitvec( bw, value );
+}
+
+SMTLib2::Node SMTLib2::load( Node array, Node offset, int bw )
+{
+    return define( _ctx.select( array, offset, bw ) );
+}
+
+SMTLib2::Node SMTLib2::store( Node array, Node offset, Node value, int bw )
+{
+    return define( _ctx.store( array, offset, value, bw ) );
 }
 
 SMTLib2::Node SMTLib2::unary( brq::smt_op op, Node arg, int bw )
@@ -123,6 +166,31 @@ SMTLib2::Node SMTLib2::extract( Node arg, std::pair< int, int > bounds )
 
 SMTLib2::Node SMTLib2::binary( brq::smt_op op, Node a, Node b, int bw )
 {
+    using smt_op = brq::smt_op;
+    if ( smt_traits( op ).is_integral() )
+    {
+        auto bw = a.bw;
+        if ( a.is_float() ) {
+            a = define( _ctx.cast( smt_op::fp_toubv, bw, a ) );
+        }
+        if ( b.is_float() ) {
+            b = define( _ctx.cast( smt_op::fp_toubv, bw, b ) );
+        }
+
+        assert( !a.is_float() && !b.is_float() );
+    }
+
+    if ( smt_traits( op ).is_float() )
+    {
+        auto bw = a.bw;
+        if ( a.is_bv() )
+            a = define( _ctx.cast( smt_op::bv_utofp, bw, a ) );
+        if ( b.is_bv() )
+            b = define( _ctx.cast( smt_op::bv_utofp, bw, b ) );
+
+        assert( a.is_float() && b.is_float() );
+    }
+
     if ( a.is_bv() && b.is_bv() )
     {
         switch ( op )
@@ -187,14 +255,14 @@ SMTLib2::Node SMTLib2::binary( brq::smt_op op, Node a, Node b, int bw )
             case op_t::fp_oge:
             case op_t::fp_olt:
             case op_t::fp_ole:
-            // case op_t::fp_one:
+            case op_t::fp_one:
             case op_t::fp_ord:
             case op_t::fp_ueq:
             case op_t::fp_ugt:
             case op_t::fp_uge:
             case op_t::fp_ult:
             case op_t::fp_ule:
-            // case op_t::fp_une:
+            case op_t::fp_une:
             case op_t::fp_uno:
                 ASSERT_EQ( bw, 1 );
                 return define( _ctx.expr( bw, op, { a, b }, brq::smtlib_rounding::RNE ) );

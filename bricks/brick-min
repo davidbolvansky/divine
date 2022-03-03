@@ -30,13 +30,6 @@
 
 namespace brq
 {
-    template< typename B, typename T, typename = void > struct is_printable : std::false_type {};
-    template< typename B, typename T >
-    struct is_printable< B, T, decltype( std::declval< B & >() << std::declval< const T & >(),
-                                         void( 0 ) ) > : std::true_type {};
-    template< typename B, typename T >
-    constexpr bool is_printable_v = is_printable< B, T >::value;
-
     /* A simple string builder, similar to std::stringstream but much lighter.
      * Only works with 8-bit characters (i.e. no wchar_t or char32_t). Provides
      * a basic selection of formatting operators. To provide formatting
@@ -45,7 +38,7 @@ namespace brq
      * friend-style definitions):
      *
      * template< typename stream >
-     * auto operator<<( stream &o, my_type t ) -> decltype( o << std::string() )
+     * auto operator<<( stream &o, my_type t ) -> decltype( o << "" )
      * {
      *     // ...
      * }
@@ -55,74 +48,86 @@ namespace brq
 
     struct string_builder
     {
-        char *_buffer = nullptr;
-        int32_t _capacity:30, _offset:30;
-        bool _hex:1, _oom:1;
+        struct _data
+        {
+            char *buffer = nullptr;
+            int32_t capacity:30, offset:30;
+            bool hex:1, oom:1;
+
+            _data() noexcept : capacity( 0 ), offset( 0 ), hex( false ), oom( false ) {}
+
+            auto reset()
+            {
+                auto rv = *this;
+                *this = _data();
+                return rv;
+            }
+        } _d;
 
         string_builder( const string_builder & ) = delete;
-        string_builder( string_builder &&o )
-            : _buffer( o._buffer ), _capacity( o._capacity ), _offset( o._offset ),
-              _hex( o._hex ), _oom( o._oom )
+        string_builder( string_builder &&o ) : _d( o._d.reset() ) {}
+        string_builder &operator=( string_builder &&rhs )
         {
-            o._buffer = nullptr;
-            o._capacity = 0;
-            o._offset = 0;
+            std::free( _d.buffer );
+            _d = rhs._d.reset();
+            return *this;
         }
 
-        string_builder() noexcept : _capacity( 0 ), _offset( 0 ), _hex( false ), _oom( false ) {}
-        ~string_builder() noexcept { std::free( _buffer ); }
+        string_builder() noexcept = default;
+        ~string_builder() noexcept { std::free( _d.buffer ); }
 
-        char *pointer() noexcept { return _buffer + _offset; }
-        char *buffer_end() noexcept { return _buffer + _capacity - 1; }
-        const char *buffer() const noexcept { return _buffer ? _buffer : ""; }
-        std::string_view data() const noexcept { return std::string_view( _buffer, _offset ); }
+        char *pointer() noexcept { return _d.buffer + _d.offset; }
+        char *buffer_end() noexcept { return _d.buffer + _d.capacity - 1; }
+        const char *buffer() const noexcept { return _d.buffer ? _d.buffer : ""; }
+        std::string_view data() const noexcept { return std::string_view( _d.buffer, _d.offset ); }
         operator std::string_view() const noexcept { return data(); }
-        int size() const noexcept { return _offset; }
-        bool truncated() const noexcept { return _oom; }
-        void kill() { clear(); _oom = true; }
+        int size() const noexcept { return _d.offset; }
+        int rewind( int x ) noexcept { int rv = _d.offset; _d.offset = x; return rv; }
+        bool truncated() const noexcept { return _d.oom; }
+        void kill() { clear(); _d.oom = true; }
 
-        string_builder &hex( bool h = true ) { _hex = h; return *this; }
-        string_builder &dec() { _hex = false; return *this; }
+        string_builder &hex( bool h = true ) { _d.hex = h; return *this; }
+        string_builder &dec() { _d.hex = false; return *this; }
 
         void clear()
         {
-            std::free( _buffer );
-            _buffer = nullptr;
-            _capacity = _offset = 0;
-            _hex = _oom = false;
+            std::free( _d.buffer );
+            _d.reset();
         }
 
         bool _make_space( int sz ) noexcept
         {
-            if ( _oom )
+            if ( _d.oom )
                 return false;
-            if ( _offset + sz < _capacity )
+            if ( _d.offset + sz < _d.capacity )
                 return true;
 
-            int new_capacity = _capacity + std::max( _capacity / 2, sz + 1 );
-            void *mem = std::realloc( _buffer, new_capacity );
+            int new_capacity = _d.capacity + std::max( _d.capacity / 2, sz + 1 );
+            void *mem = std::realloc( _d.buffer, new_capacity );
             if ( mem )
             {
-                _buffer = static_cast< char * >( mem );
-                _capacity = new_capacity;
+                _d.buffer = static_cast< char * >( mem );
+                _d.capacity = new_capacity;
             }
             else
-                _oom = true;
+                _d.oom = true;
 
-            return !_oom;
+            return !_d.oom;
         }
 
         string_builder &operator<<( std::string_view str ) noexcept
         {
             if ( !_make_space( str.size() ) ) return *this;
             std::copy( str.begin(), str.end(), pointer() );
-            _offset += str.size();
-            _buffer[ _offset ] = 0;
+            _d.offset += str.size();
+            _d.buffer[ _d.offset ] = 0;
             return *this;
         }
 
         string_builder &operator<<( std::u32string_view us ) noexcept
         {
+            auto to_uint8_t = []( auto x ) -> uint8_t { return x; };
+
             while ( !us.empty() )
             {
                 if ( !_make_space( 4 ) ) return *this;
@@ -134,25 +139,25 @@ namespace brq
 
                 if ( wc < 0x000080 )
                 {
-                    _buffer[ _offset++ ] = static_cast< uint8_t >( wc ); 
+                    _d.buffer[ _d.offset++ ] = to_uint8_t( wc ); 
                 }
                 else if ( wc < 0x000800 )
                 {
-                    _buffer[ _offset++ ] = static_cast< uint8_t >( 0xC0 | ( wc >> 6 ) );
-                    _buffer[ _offset++ ] = static_cast< uint8_t >( 0x80 | ( wc & 0x03F ) );
+                    _d.buffer[ _d.offset++ ] = to_uint8_t( 0xC0 | ( wc >> 6 ) );
+                    _d.buffer[ _d.offset++ ] = to_uint8_t( 0x80 | ( wc & 0x03F ) );
                 }
                 else if ( wc < 0x010000 )
                 {
-                    _buffer[ _offset++ ] = static_cast< uint8_t >( 0xE0 |   ( wc >> 12 ) );
-                    _buffer[ _offset++ ] = static_cast< uint8_t >( 0x80 | ( ( wc & 0x0FC0 ) >> 6 ) );
-                    _buffer[ _offset++ ] = static_cast< uint8_t >( 0x80 |   ( wc & 0x003F ) );
+                    _d.buffer[ _d.offset++ ] = to_uint8_t( 0xE0 |   ( wc >> 12 ) );
+                    _d.buffer[ _d.offset++ ] = to_uint8_t( 0x80 | ( ( wc & 0x0FC0 ) >> 6 ) );
+                    _d.buffer[ _d.offset++ ] = to_uint8_t( 0x80 |   ( wc & 0x003F ) );
                 }
                 else // if (wc < 0x110000)
                 {
-                    _buffer[ _offset++ ] = static_cast< uint8_t >( 0xF0 |   ( wc >> 18 ) );
-                    _buffer[ _offset++ ] = static_cast< uint8_t >( 0x80 | ( ( wc & 0x03F000 ) >> 12 ) );
-                    _buffer[ _offset++ ] = static_cast< uint8_t >( 0x80 | ( ( wc & 0x000FC0 ) >> 6 ) );
-                    _buffer[ _offset++ ] = static_cast< uint8_t >( 0x80 |   ( wc & 0x00003F ) );
+                    _d.buffer[ _d.offset++ ] = to_uint8_t( 0xF0 |   ( wc >> 18 ) );
+                    _d.buffer[ _d.offset++ ] = to_uint8_t( 0x80 | ( ( wc & 0x03F000 ) >> 12 ) );
+                    _d.buffer[ _d.offset++ ] = to_uint8_t( 0x80 | ( ( wc & 0x000FC0 ) >> 6 ) );
+                    _d.buffer[ _d.offset++ ] = to_uint8_t( 0x80 |   ( wc & 0x00003F ) );
                 }
 
                 us.remove_prefix( 1 );
@@ -167,20 +172,20 @@ namespace brq
             if ( std::isprint( c ) )
             {
                 if ( !_make_space( 3 ) ) return *this;
-                _buffer[ _offset++ ] = '\'';
-                _buffer[ _offset++ ] = c;
-                _buffer[ _offset++ ] = '\'';
-                _buffer[ _offset ] = 0;
+                _d.buffer[ _d.offset++ ] = '\'';
+                _d.buffer[ _d.offset++ ] = c;
+                _d.buffer[ _d.offset++ ] = '\'';
+                _d.buffer[ _d.offset ] = 0;
             }
             return *this;
         }
 
         string_builder &operator<<( const void *ptr ) noexcept
         {
-            auto was_hex = _hex;
-            _hex = true;
+            auto was_hex = _d.hex;
+            _d.hex = true;
             (*this) << uintptr_t( ptr );
-            _hex = was_hex;
+            _d.hex = was_hex;
             return *this;
         }
 
@@ -192,8 +197,9 @@ namespace brq
         template< typename C >
         auto operator<<( const C &c ) noexcept
             -> std::enable_if_t< !std::is_convertible_v< C, std::string_view > &&
-                                 !std::is_convertible_v< C, std::u32string_view >,
-                                 decltype( c.has_value(), *this << *c ) >
+                                 !std::is_convertible_v< C, std::u32string_view > &&
+                                 static_cast< decltype( c.has_value() ) >( true ),
+                                 decltype( *this << *c ) >
         {
             if ( c.has_value() )
                 return *this << "[ " << *c << " ]";
@@ -204,10 +210,8 @@ namespace brq
         template< typename C >
         auto operator<<( const C &c ) noexcept
             -> std::enable_if_t< !std::is_convertible_v< C, std::string_view > &&
-                                 !std::is_convertible_v< C, std::u32string_view > &&
-                                 is_printable_v< string_builder, decltype( *c.begin() ) > &&
-                                 is_printable_v< string_builder, decltype( *c.end() ) >,
-                                 string_builder & >
+                                 !std::is_convertible_v< C, std::u32string_view >,
+                                 decltype( *c.begin(), *c.end(), *this ) >
         {
             bool first = true;
             *this << "[";
@@ -232,24 +236,27 @@ namespace brq
 
         template< typename V >
         auto operator<<( const V &val ) noexcept
-            -> decltype( std::to_chars( _buffer, _buffer, val ), *this )
+            -> std::enable_if_t< std::is_arithmetic_v< V >,
+                                 decltype( std::to_chars( _d.buffer, _d.buffer, val ), *this ) >
         {
             int cap = 16;
             std::to_chars_result result;
             do {
                 if ( !_make_space( cap ) ) return *this;
                 if constexpr ( std::is_integral< V >::value )
-                    result = std::to_chars( pointer(), buffer_end(), val, _hex ? 16 : 10 );
+                    result = std::to_chars( pointer(), buffer_end(), val, _d.hex ? 16 : 10 );
                 else
                     result = std::to_chars( pointer(), buffer_end(), val );
                 cap *= 2;
             } while ( result.ec == std::errc::value_too_large );
 
-            _offset = result.ptr - _buffer;
-            _buffer[ _offset ] = 0;
+            _d.offset = result.ptr - _d.buffer;
+            _d.buffer[ _d.offset ] = 0;
             return *this;
         }
     };
+
+    struct unit {};
 
     struct fallback
     {
@@ -268,15 +275,24 @@ namespace brq
      * doesn't care about the trace output). */
 
     template< typename stream, typename T >
-    auto format_nofail( stream &acc, const T &t ) noexcept -> decltype( acc << t, void(0) )
+    auto format_nofail( stream &acc, const T &t ) noexcept -> decltype( acc << t )
     {
-        acc << t;
+        return acc << t;
     }
 
     template< typename stream >
-    void format_nofail( stream &acc, fallback ) noexcept
+    decltype( auto ) format_nofail( stream &acc, fallback ) noexcept
     {
-        acc << "<unknown>";
+        return acc << "<unknown>";
+    }
+
+    template< bool nofail, typename stream, typename arg_t >
+    decltype( auto ) format_arg( stream &acc, const arg_t &arg ) noexcept
+    {
+        if constexpr ( nofail )
+            return format_nofail( acc, arg );
+        else
+            return acc << arg;
     }
 
     template< bool nofail = false, typename stream >
@@ -286,30 +302,40 @@ namespace brq
     void format_args( const char *sep, stream &acc, const A &a, const Args & ... as ) noexcept
     {
         int mark = acc.size();
-        if constexpr ( nofail )
-            format_nofail( acc, a );
-        else
-            acc << a;
+        decltype( auto ) acc_ = format_arg< nofail >( acc, a );
 
         if ( mark != acc.size() )
-            acc << sep;
-        format_args< nofail >( sep, acc, as... );
+            acc_ << sep;
+
+        format_args< nofail >( sep, acc_, as... );
     }
 
-    using split_view = std::pair< std::string_view, std::string_view >;
+    template< typename char_t >
+    using split_view_t = std::pair< std::basic_string_view< char_t >, std::basic_string_view< char_t > >;
+    using split_view = split_view_t< char >; // std::pair< std::string_view, std::string_view >;
 
-    static inline split_view split( std::string_view p, char d, bool reverse = false ) noexcept
+    template< typename char_t >
+    static inline split_view_t< char_t > split( std::basic_string_view< char_t > p,
+                                                char_t d, bool reverse = false ) noexcept
     {
+        using view = std::basic_string_view< char_t >;
         auto s = reverse ? p.rfind( d ) : p.find( d );
         if ( s == p.npos )
-            return reverse ? split_view{ "", p } : split_view{ p, "" };
+            return reverse ? split_view_t< char_t >{ view(), p } : split_view_t< char_t >{ p, view() };
         auto q = p;
         q.remove_prefix( s + 1 );
         p.remove_suffix( p.size() - s );
         return { p, q };
     }
 
-    static inline bool starts_with( std::string_view s, std::string_view t ) noexcept
+    static inline split_view split( std::string_view p, char d, bool reverse = false ) noexcept
+    {
+        return split< char >( p, d, reverse );
+    }
+
+    template< typename char_t >
+    static inline bool starts_with( std::basic_string_view< char_t > s,
+                                    std::basic_string_view< char_t > t ) noexcept
     {
         if ( s.size() >= t.size() )
         {
@@ -320,7 +346,9 @@ namespace brq
             return false;
     }
 
-    static inline bool ends_with( std::string_view s, std::string_view t ) noexcept
+    template< typename char_t >
+    static inline bool ends_with( std::basic_string_view< char_t > s,
+                                  std::basic_string_view< char_t > t ) noexcept
     {
         if ( s.size() >= t.size() )
         {
@@ -329,5 +357,25 @@ namespace brq
         }
         else
             return false;
+    }
+
+    static inline bool starts_with( std::string_view s, std::string_view t ) noexcept
+    {
+        return starts_with< char >( s, t );
+    }
+
+    static inline bool ends_with( std::string_view s, std::string_view t ) noexcept
+    {
+        return ends_with< char >( s, t );
+    }
+
+    static inline bool starts_with( std::u32string_view s, std::u32string_view t ) noexcept
+    {
+        return starts_with< char32_t >( s, t );
+    }
+
+    static inline bool ends_with( std::u32string_view s, std::u32string_view t ) noexcept
+    {
+        return ends_with< char32_t >( s, t );
     }
 }

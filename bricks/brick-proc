@@ -2,6 +2,8 @@
 
 /*
  * (c) 2016 Vladimír Štill <xstill@fi.muni.cz>
+ * (c) 2020 Adam Matoušek <xmatous3@fi.muni.cz>
+ * (c) 2021 Petr Ročkai <code@fixp.eu>
  */
 
 /* Redistribution and use in source and binary forms, with or without
@@ -47,436 +49,951 @@
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <poll.h>
 #endif
 
 extern char **environ;
 
-namespace brick {
-namespace proc {
-
-struct ProcError : brq::error
+namespace brq
 {
-    using brq::error::error;
-};
-
-enum SpawnOptsEnum : unsigned {
-    None = 0,
-    CaptureStdout = 0x1,
-    CaptureStderr = 0x2,
-    ShowCmd = 0x100
-};
-
-struct SpawnOpts {
-    SpawnOpts( SpawnOptsEnum f ) : flags( f ) { }
-    SpawnOpts( unsigned f ) : flags( SpawnOptsEnum( f ) ) { }
-    explicit SpawnOpts( std::string in ) : hasStdin( true ), in( in ) { }
-
-    bool hasFlag( SpawnOptsEnum f ) const { return (flags & f) == f; }
-
-    bool hasStdin = false;
-    std::string in;
-    SpawnOptsEnum flags = None;
-};
-
-inline SpawnOpts StdinString( std::string in ) { return SpawnOpts( in ); }
-
-inline SpawnOpts operator|( SpawnOpts a, SpawnOpts b ) {
-    a.flags = SpawnOptsEnum( a.flags | b.flags );
-    ASSERT( !(a.hasStdin && b.hasStdin) );
-    if ( b.hasStdin ) {
-        a.hasStdin = true;
-        a.in = std::move( b.in );
-    }
-    return a;
-}
-
-struct SystemOutput {
-
-    SystemOutput( int exitcode, int signal, std::string out, std::string err ) :
-        _exitcode( exitcode ), _signal( signal ), _out( out ), _err( err )
-    { }
-
-    bool ok() const { return _exitcode == 0 && _signal == 0; }
-    explicit operator bool() const { return ok(); }
-
-    int exitcode() const { return _exitcode; }
-    int signal() const { return _signal; }
-
-    const std::string &out() const { return _out; }
-    const std::string &err() const { return _err; }
-
-  private:
-    int _exitcode;
-    int _signal;
-    std::string _out;
-    std::string _err;
-};
-
-inline namespace {
-
-std::string to_string( const SystemOutput &o ) {
-    std::stringstream ss;
-    ss << "exitcode = " << o.exitcode() << ", signal = " << o.signal() << std::endl;
-    for ( auto x : { std::make_pair( "stdout", &o.out() ), std::make_pair( "stderr", &o.err() ) } ) {
-        if ( !x.second->empty() ) {
-            ss << x.first << ":" << std::endl;
-            std::stringstream data( *x.second );
-            std::string line;
-            while ( std::getline( data, line ) )
-                ss << "    " << line << std::endl;
-            ss << std::endl;
-        }
-    }
-    return ss.str();
-}
-
-}
-
-struct Pipe {
-    Pipe() {
-        if ( ::pipe2( _fds, O_CLOEXEC ) == -1 )
-            throw ProcError( "could not create pipe" );
-    }
-
-    ~Pipe() { close(); }
-
-    void close() {
-        closeRead();
-        closeWrite();
-    }
-
-    void closeRead() {
-        int r = _fds[0];
-        _fds[0] = -1;
-        if ( r >= 0 )
-            ::close( r );
-    }
-
-    void closeWrite() {
-        int w = _fds[1];
-        _fds[1] = -1;
-        if ( w >= 0 )
-            ::close( w );
-    }
-
-    std::string drain() {
-        std::string str;
-        char data[ 1024 ];
-        long n;
-        do {
-            n = ::read( read(), data, sizeof( data ) );
-            if ( n > 0 )
-                str += std::string( data, n );
-        } while( n > 0 );
-        return str;
-    }
-
-    void push( std::string s ) {
-        const char *ptr = s.data();
-        const char *const end = ptr + s.size();
-        int r = 0;
-        while ( ptr < end && r >= 0 ) {
-            r = ::write( write(), ptr, end - ptr );
-            ptr += r;
-        }
-    }
-
-    int read() const { return _fds[0]; }
-    int write() const { return _fds[1]; }
-
-#ifdef __unix__
-    void attachStdout() { ::dup2( write(), STDOUT_FILENO ); }
-    void attachStderr() { ::dup2( write(), STDERR_FILENO ); }
-    void attachStdin() { ::dup2( read(), STDIN_FILENO ); }
-#else
-#error attach* fuctions are not supporrted on this platfrom
-#endif
-
-  private:
-    int _fds[2];
-};
-
-inline SystemOutput spawnAndWait( SpawnOpts opts, std::vector< std::string > args )
-{
-    if ( opts.hasFlag( ShowCmd ) ) {
-        std::cerr << "+ ";
-        std::copy( args.begin(), args.end(), std::ostream_iterator< std::string >( std::cerr, " " ) );
-        std::cerr << std::endl;
-    }
-    std::vector< const char * > cargs;
-    std::transform( args.begin(), args.end(), std::back_inserter( cargs ),
-                    []( const std::string &s ) { return s.c_str(); } );
-    cargs.push_back( nullptr );
-    std::string out, err;
-
-#ifdef __unix__
-    std::future< void > inf;
-    std::future< std::string > outf, errf;
-    std::unique_ptr< Pipe > inp, outp, errp;
-    if ( opts.hasStdin )
-        inp = std::make_unique< Pipe >();
-    if ( opts.hasFlag( CaptureStdout ) )
-        outp = std::make_unique< Pipe >();
-    if ( opts.hasFlag( CaptureStderr ) )
-        errp = std::make_unique< Pipe >();
-
-    pid_t pid;
-    if ( (pid = ::fork()) == 0 ) {
-        if ( inp ) {
-            inp->attachStdin();
-            inp->close();
-        }
-        if ( outp ) {
-            outp->attachStdout();
-            outp->close();
-        }
-        if ( errp ) {
-            errp->attachStderr();
-            errp->close();
-        }
-
-        ::execvp( cargs[ 0 ], const_cast< char *const * >( cargs.data() ) );
-        std::cerr << "exec failed: " << cargs[ 0 ] << std::endl;
-        ::_exit( 1 );
-    } else if ( pid > 0 ) {
-        if ( inp ) {
-            inp->closeRead();
-            inf = std::async( std::launch::async, [&] { inp->push( opts.in ); inp->close(); } );
-        }
-        if ( outp ) {
-            outp->closeWrite();
-            outf = std::async( std::launch::async, [&] { return outp->drain(); } );
-        }
-        if ( errp ) {
-            errp->closeWrite();
-            errf = std::async( std::launch::async, [&] { return errp->drain(); } );
-        }
-        int status;
-        int r = ::waitpid( pid, &status, 0 );
-
-        if ( inf.valid() )
-            inf.get();
-        out = outf.valid() ? outf.get() : "";
-        err = errf.valid() ? errf.get() : "";
-
-        if ( r < 0 )
-            throw ProcError( "waitpid error" );
-        return SystemOutput( WIFEXITED( status ) ? WEXITSTATUS( status ) : 0,
-                             WIFSIGNALED( status ) ? WTERMSIG( status ) : 0,
-                             out, err );
-    } else
-        throw ProcError( "fork failed" );
-#else
-#error implementation of brick::proc::spawnAndWait for this platform is missing
-#endif
-}
-
-inline SystemOutput spawnAndWait( std::vector< std::string > args ) {
-    return spawnAndWait( None, args );
-}
-
-template< typename... Args >
-SystemOutput spawnAndWait( SpawnOpts opts, Args &&...args ) {
-    return spawnAndWait( opts, std::vector< std::string >{ std::forward< Args >( args )... } );
-}
-
-template< typename... Args >
-SystemOutput spawnAndWait( SpawnOptsEnum opts, Args &&...args ) {
-    return spawnAndWait( SpawnOpts( opts ), std::forward< Args >( args )... );
-}
-
-template< typename... Args >
-SystemOutput spawnAndWait( unsigned opts, Args &&...args ) { // note: result of | on SpawnOptsEnum in unsigned
-    return spawnAndWait( SpawnOpts( SpawnOptsEnum( opts ) ), std::forward< Args >( args )... );
-}
-
-template< typename... Args >
-SystemOutput spawnAndWait( Args &&...args ) {
-    return spawnAndWait( None, std::forward< Args >( args )... );
-}
-
-inline SystemOutput shellSpawnAndWait( SpawnOpts opts, std::string shellcmd ) {
-#ifdef __unix__
-    return spawnAndWait( opts, "/bin/sh", "-c", shellcmd );
-#else
-#error shell spawn is not supported on this platform
-#endif
-}
-
-inline SystemOutput shellSpawnAndWait( std::string shellcmd ) {
-    return shellSpawnAndWait( None, shellcmd );
-}
-
-struct XTerm
-{
-    struct
+    enum spawn_opts_enum : unsigned
     {
-        int pid = 0;
-        int masterfd, slavefd;
+        none = 0,
+        capture_stdout = 0x1,
+        capture_stderr = 0x2,
+        show_cmd = 0x100
+    };
 
-        std::unique_ptr< std::iostream > stream;
-        std::unique_ptr< brq::posix_buf > buf;
-    } _d;
-
-    struct SBuf : brq::posix_buf
+    struct spawn_opts
     {
-        using brq::posix_buf::posix_buf;
+        spawn_opts( spawn_opts_enum f ) : flags( f ) { }
+        spawn_opts( unsigned f ) : flags( spawn_opts_enum( f ) ) { }
+        explicit spawn_opts( std::string in ) : has_stdin( true ), in( in ) { }
 
-        int sync()
+        bool has_flag( spawn_opts_enum f ) const { return (flags & f) == f; }
+
+        bool has_stdin = false;
+        std::string in;
+        spawn_opts_enum flags = none;
+    };
+
+    inline spawn_opts stdin_string( std::string in ) { return spawn_opts( in ); }
+
+    inline spawn_opts operator|( spawn_opts a, spawn_opts b )
+    {
+        a.flags = spawn_opts_enum( a.flags | b.flags );
+        ASSERT( !( a.has_stdin && b.has_stdin ) );
+        if ( b.has_stdin )
         {
-            char tmp[ _buf_size * 2 ];
-            int i = 0;
-            for ( auto p = pbase(); p < pptr(); ++p )
+            a.has_stdin = true;
+            a.in = std::move( b.in );
+        }
+        return a;
+    }
+
+    struct system_output
+    {
+        system_output( int exitcode, int signal, std::string out, std::string err ) :
+            _exitcode( exitcode ), _signal( signal ), _out( out ), _err( err )
+        { }
+
+        bool ok() const { return _exitcode == 0 && _signal == 0; }
+        explicit operator bool() const { return ok(); }
+
+        int exitcode() const { return _exitcode; }
+        int signal() const { return _signal; }
+
+        const std::string &out() const { return _out; }
+        const std::string &err() const { return _err; }
+
+      private:
+        int _exitcode;
+        int _signal;
+        std::string _out;
+        std::string _err;
+    };
+
+    static inline std::string to_string( const system_output &o )
+    {
+        string_builder ss;
+        ss << "exitcode = " << o.exitcode() << ", signal = " << o.signal() << "\n";
+
+        for ( auto x : { std::make_pair( "stdout", &o.out() ), std::make_pair( "stderr", &o.err() ) } )
+        {
+            if ( !x.second->empty() )
             {
-                if ( *p == '\n' )
-                    tmp[ i++ ] = '\r';
-                tmp[ i++ ] = *p;
+                ss << x.first << ":" << "\n";
+                for ( auto line : splitter( *x.second, '\n' ) )
+                    ss << "    " << line << "\n";
+                ss << "\n";
             }
-            do_sync( tmp, i );
-            return 0;
+        }
+        return ss.buffer();
+    }
+
+    struct fd
+    {
+        int _number = -1;
+        int number() const { return _number; }
+
+        static fd from_raw( int n )
+        {
+            fd r;
+            r._number = n;
+            return r;
+        }
+
+        template< typename... args_t >
+        static fd open( args_t... args )
+        {
+            int raw = ::open( args... );
+
+            if ( raw < 0 )
+                raise< system_error >() << "error opening file" << brq::format( args... );
+            else
+                return from_raw( raw );
+        }
+
+        static fd dup( int n )
+        {
+            return from_raw( ::dup( n ) );
+        }
+
+        void close()
+        {
+            if ( _number >= 0 )
+                ::close( _number );
+            _number = -1;
+        }
+
+        void acquire( int n )
+        {
+            close();
+            _number = n;
+        }
+
+        fd() = default;
+        fd( const fd & ) = delete;
+        fd &operator=( const fd &rhs ) = delete;
+
+        fd( fd &&rhs ) : _number( rhs._number )
+        {
+            rhs._number = -1;
+        }
+
+        fd &operator=( fd &&rhs )
+        {
+            close();
+            _number = rhs._number;
+            rhs._number = -1;
+            return *this;
+        }
+
+        ~fd() { close(); }
+    };
+
+    struct pipe
+    {
+        fd _in, _out;
+
+        pipe()
+        {
+            int fds[ 2 ];
+            if ( ::pipe2( fds, O_CLOEXEC ) == -1 )
+                raise< system_error >() << "could not create a pipe";
+            _in.acquire( fds[ 0 ] );
+            _out.acquire( fds[ 1 ] );
+        }
+
+        void close()
+        {
+            _in.close();
+            _out.close();
+        }
+
+        void close_read()  { _in.close(); }
+        void close_write() { _out.close(); }
+
+        std::string drain()
+        {
+            std::string str;
+            char data[ 1024 ];
+            long n;
+            do {
+                n = ::read( read().number(), data, sizeof( data ) );
+                if ( n > 0 )
+                    str += std::string( data, n );
+            } while( n > 0 );
+            return str;
+        }
+
+        void push( std::string s )
+        {
+            const char *ptr = s.data();
+            const char *const end = ptr + s.size();
+            int r = 0;
+            while ( ptr < end && r >= 0 ) {
+                r = ::write( write().number(), ptr, end - ptr );
+                ptr += r;
+            }
+        }
+
+        const fd &read()  const { return _in; }
+        const fd &write() const { return _out; }
+
+        void attach_stdout() { ::dup2( write().number(), STDOUT_FILENO ); }
+        void attach_stderr() { ::dup2( write().number(), STDERR_FILENO ); }
+        void attach_stdin()  { ::dup2( read().number(), STDIN_FILENO ); }
+    };
+
+#ifdef __unix__
+    inline system_output spawn_and_wait( spawn_opts opts, std::vector< std::string > args )
+    {
+        if ( opts.has_flag( show_cmd ) )
+        {
+            std::cerr << "+ ";
+            std::copy( args.begin(), args.end(), std::ostream_iterator< std::string >( std::cerr, " " ) );
+            std::cerr << std::endl;
+        }
+
+        std::vector< const char * > cargs;
+        std::transform( args.begin(), args.end(), std::back_inserter( cargs ),
+                        []( const std::string &s ) { return s.c_str(); } );
+        cargs.push_back( nullptr );
+        std::string out, err;
+
+        std::future< void > inf;
+        std::future< std::string > outf, errf;
+        std::unique_ptr< pipe > inp, outp, errp;
+        if ( opts.has_stdin )
+            inp = std::make_unique< pipe >();
+        if ( opts.has_flag( capture_stdout ) )
+            outp = std::make_unique< pipe >();
+        if ( opts.has_flag( capture_stderr ) )
+            errp = std::make_unique< pipe >();
+
+        pid_t pid = ::fork();
+
+        if ( pid == 0 )
+        {
+            if ( inp )
+            {
+                inp->attach_stdin();
+                inp->close();
+            }
+
+            if ( outp )
+            {
+                outp->attach_stdout();
+                outp->close();
+            }
+
+            if ( errp )
+            {
+                errp->attach_stderr();
+                errp->close();
+            }
+
+            ::execvp( cargs[ 0 ], const_cast< char *const * >( cargs.data() ) );
+            std::cerr << "exec failed: " << cargs[ 0 ] << std::endl;
+            ::_exit( 1 );
+        }
+
+        else if ( pid > 0 )
+        {
+            if ( inp ) {
+                inp->close_read();
+                inf = std::async( std::launch::async, [&] { inp->push( opts.in ); inp->close(); } );
+            }
+            if ( outp ) {
+                outp->close_write();
+                outf = std::async( std::launch::async, [&] { return outp->drain(); } );
+            }
+            if ( errp ) {
+                errp->close_write();
+                errf = std::async( std::launch::async, [&] { return errp->drain(); } );
+            }
+            int status;
+            int r = ::waitpid( pid, &status, 0 );
+
+            if ( inf.valid() )
+                inf.get();
+            out = outf.valid() ? outf.get() : "";
+            err = errf.valid() ? errf.get() : "";
+
+            if ( r < 0 )
+                raise< system_error >() << "waitpid error";
+
+            return system_output( WIFEXITED( status ) ? WEXITSTATUS( status ) : 0,
+                                  WIFSIGNALED( status ) ? WTERMSIG( status ) : 0,
+                                  out, err );
+        }
+
+        else
+        {
+            raise< system_error >() << "fork failed";
+            abort();
+        }
+    }
+
+    inline system_output spawn_and_wait( std::vector< std::string > args )
+    {
+        return spawn_and_wait( none, args );
+    }
+
+    template< typename... Args >
+    system_output spawn_and_wait( spawn_opts opts, Args &&...args )
+    {
+        return spawn_and_wait( opts, std::vector< std::string >{ std::forward< Args >( args )... } );
+    }
+
+    template< typename... Args >
+    system_output spawn_and_wait( spawn_opts_enum opts, Args &&...args )
+    {
+        return spawn_and_wait( spawn_opts( opts ), std::forward< Args >( args )... );
+    }
+
+    template< typename... Args >
+    system_output spawn_and_wait( unsigned opts, Args &&...args )
+    {
+        // note: result of | on spawn_opts_enum in unsigned
+        return spawn_and_wait( spawn_opts( spawn_opts_enum( opts ) ), std::forward< Args >( args )... );
+    }
+
+    template< typename... Args >
+    system_output spawn_and_wait( Args &&...args )
+    {
+        return spawn_and_wait( none, std::forward< Args >( args )... );
+    }
+
+    inline system_output shell_spawn_and_wait( spawn_opts opts, std::string shellcmd )
+    {
+        return spawn_and_wait( opts, "/bin/sh", "-c", shellcmd );
+    }
+
+    inline system_output shell_spawn_and_wait( std::string shellcmd )
+    {
+        return shell_spawn_and_wait( none, shellcmd );
+    }
+#endif
+
+#ifdef __unix__
+    struct spawn
+    {
+        struct
+        {
+            pid_t pid = -1;
+            pipe from_child, to_child;
+            int status = 0;
+        } _d;
+
+        const fd &read_fd() const { return _d.from_child.read(); }
+        const fd &write_fd() const { return _d.to_child.write(); }
+        fd take_read_fd()  { return std::move( _d.from_child._in ); }
+        fd take_write_fd() { return std::move( _d.to_child._out ); }
+
+        spawn( spawn &&o ) : _d( std::move( o._d ) )
+        {
+            o._d.pid = -1;
+        }
+
+        spawn &operator=( spawn &&o )
+        {
+            close();
+            _d = std::move( o._d );
+            o._d.pid = -1;
+            return *this;
+        }
+
+        template< typename exec_t >
+        spawn( exec_t exec, std::enable_if_t< std::is_invocable_v< exec_t >, int > = 0 )
+        {
+            _d.pid = ::fork();
+
+            if ( _d.pid == 0 ) /* child */
+            {
+                _d.to_child.attach_stdin();
+                _d.from_child.attach_stdout();
+                _d.to_child.close();
+                _d.from_child.close();
+
+                exec();
+                std::cerr << "spawn: exec didn't, in fact, exec" << std::endl;
+                abort();
+            }
+
+            else if ( _d.pid > 0 ) /* parent */
+            {
+                _d.to_child.close_read();
+                _d.from_child.close_write();
+            }
+
+            else
+                throw brq::system_error( "spawn: fork" );
+        }
+
+        static auto execvp( std::vector< std::string > args )
+        {
+            return [=]
+            {
+                std::vector< const char * > cargs;
+                std::transform( args.begin(), args.end(), std::back_inserter( cargs ),
+                                []( const std::string &s ) { return s.c_str(); } );
+                cargs.push_back( nullptr );
+
+                ::execvp( cargs[ 0 ], const_cast< char * const * >( cargs.data() ) );
+            };
+        }
+
+        spawn( std::vector< std::string > args )
+            : spawn( execvp( args ) )
+        {}
+
+        template< typename... args_t,
+                  typename = decltype( std::vector{ std::string( std::declval< args_t >() )... } ) >
+        spawn( args_t &&... args  )
+            : spawn( std::vector{ std::string( args )... } )
+        {}
+
+        spawn() = default;
+
+        int close()
+        {
+            if ( _d.pid < 0 )
+                return _d.status;
+
+            DEBUG( "spawn::close()", _d.pid );
+            pid_t pid = _d.pid;
+            _d.pid = -1;
+            int wst;
+
+            if ( waitpid( pid, &wst, 0 ) < 0 )
+                throw brq::system_error( "spawn: wait" );
+
+            if ( WIFEXITED( wst ) )
+                _d.status = WEXITSTATUS( wst );
+            if ( WIFSIGNALED( wst ) )
+                _d.status = -WTERMSIG( wst );
+
+            return _d.status;
+        }
+
+        ~spawn() { close(); }
+    };
+#endif
+
+    /* • ‹write› is called when writing is possible; gets the file descriptor as
+     *   its argument and returns whether to attempt for further writes; see the
+     *   ‹feed› function for a pre-made implementation.
+     * • ‹read› is called when reading is possible; gets the file descriptor as
+     *   its argument and returns whether to continue. See ‹pipe_read_lines›
+     *   for a handy wrapper. */
+
+    enum class io_result { done, ready, blocked };
+
+    struct communicate_base
+    {
+        virtual void forever() = 0;
+        virtual void poll( int = 0 ) = 0;
+        virtual void poll_in( int = 0 ) = 0;
+        virtual void poll_out( int = 0 ) = 0;
+        virtual string_builder read( int bytes ) = 0;
+        virtual ~communicate_base() = default;
+    };
+
+    template < typename write_t, typename read_t, typename eof_t = void(*)() >
+    struct communicate : communicate_base
+    {
+        fd fd_out, fd_in;
+        const write_t &do_write;
+        const read_t &do_read;
+        eof_t eof;
+        std::array< pollfd, 2 > fdset;
+        int res = 0;
+
+        communicate( fd out, fd in, const write_t &w, const read_t &r, eof_t eof = []{} )
+            : fd_out( std::move( out ) ), fd_in( std::move( in ) ),
+              do_write( w ), do_read( r ), eof( eof )
+        {
+            ::fcntl( fd_out.number(), F_SETFL, O_NONBLOCK );
+            ::fcntl( fd_in.number(),  F_SETFL, O_NONBLOCK );
+
+            fdset[ 0 ] = { fd_out.number(), POLLOUT, 0 };
+            fdset[ 1 ] = { fd_in.number(),  POLLIN,  0 };
+        }
+
+        void forever() override
+        {
+            while ( fdset[ 0 ].fd >= 0 || fdset[ 1 ].fd >= 0 )
+                poll();
+        }
+
+        void poll( int timeout = -1 ) override
+        {
+            _poll( timeout );
+            _poll_out();
+            _poll_in();
+        }
+
+        void _poll_partial( int timeout, int which )
+        {
+            auto backup = fdset[ which ].events;
+            brq::finally _cleanup( [&]{ fdset[ which ].events = backup; } );
+            fdset[ which ].events = 0; /* ignore */
+            _poll( timeout );
+
+            if ( which == 0 )
+                _poll_out();
+            else
+                _poll_in();
+        }
+
+        void poll_in( int timeout = 0 )  override { _poll_partial( timeout, 1 ); }
+        void poll_out( int timeout = 0 ) override { _poll_partial( timeout, 0 ); }
+
+        string_builder read( int to_read ) override
+        {
+            string_builder out;
+            char buffer[ 512 ];
+
+            while ( to_read )
+            {
+                int bytes = ::read( fd_in.number(), buffer, std::min( to_read, 512 ) );
+
+                if ( bytes > 0 )
+                {
+                    out << std::string_view( buffer, bytes );
+                    to_read -= bytes;
+                }
+                else if ( bytes < 0 )
+                {
+                    if ( errno == EAGAIN || errno == EINTR )
+                        continue;
+                    throw brq::system_error( "fd::read" );
+                }
+                else
+                    break;
+            }
+
+            return out;
+        }
+
+        void _poll( int timeout )
+        {
+            fdset[ 0 ].revents = fdset[ 1 ].revents = 0;
+
+            if ( res == 0 )
+                res = ::poll( fdset.begin(), fdset.size(), timeout );
+
+            if ( res == -1 )
+            {
+                if ( errno == EINTR )
+                    return poll( timeout );
+                throw brq::system_error( "communicate: poll" );
+            }
+
+            if ( res == 0 && timeout )
+                throw std::runtime_error( "communicate: poll timed out" );
+
+            res = 0;
+        }
+
+        void _poll_out()
+        {
+            if ( fdset[ 0 ].revents & ( POLLERR | POLLOUT | POLLHUP ) ||
+                 fdset[ 0 ].events == 0 /* was previously blocked */ )
+            {
+                auto result = do_write( fd_out );
+                if ( result == io_result::done || fdset[ 0 ].revents & ( POLLHUP | POLLERR ) )
+                {
+                    fd_out.close();
+                    fdset[ 0 ].fd = -1;
+                }
+                else
+                    fdset[ 0 ].events = result == io_result::ready ? POLLOUT : 0;
+            }
+        }
+
+        void _poll_in()
+        {
+            if ( fdset[ 1 ].revents & ( POLLERR | POLLIN | POLLHUP ) )
+            {
+                if ( !do_read( fd_in ) || fdset[ 1 ].revents & ( POLLERR | POLLHUP ) )
+                {
+                    fd_in.close();
+                    fdset[ 1 ].fd = -1;
+                    res = 1; /* skip next poll */
+                    eof();
+                }
+                else
+                    fdset[ 0 ].events = POLLOUT;
+            }
         }
     };
 
-    void open()
+    /* Pipethrough for filtering data through a subprocess.
+     *
+     * 'Exec' shall execve(2) eventually. See ‹communicate› above regarding ‹read›
+     * and ‹write›. File descriptors are closed automatically, don't do it in the
+     * callbacks.
+     *
+     * Returns the return code of the subprocess or a negative number of the signal
+     * that terminated it. */
+
+#ifdef __unix__
+    template < typename Write, typename Read, typename... Exec >
+    int pipethrough( Write do_write, Read do_read, Exec... exec )
     {
-        _d.masterfd = posix_openpt( O_RDWR );
-        if ( grantpt( _d.masterfd ) )
-            throw std::system_error( errno, std::system_category(),
-                                     "Could not grantpt()." );
-        if ( unlockpt( _d.masterfd ) )
-            throw std::system_error( errno, std::system_category(),
-                                     "Could not unlockpt()." );
-
-        const char *slavepts = ptsname( _d.masterfd );
-        if ( !slavepts )
-            throw std::system_error( errno, std::system_category(),
-                                     "Could not ptsname()." );
-        _d.slavefd = ::open( slavepts, O_RDWR );
-        if ( _d.slavefd < 0 )
-            throw std::system_error( errno, std::system_category(),
-                                     "Could not open slave PTS." );
-
-        std::string slave = std::string( "-S" ) +
-                            slavepts + "/" + std::to_string( _d.slavefd );
-        const char *argv[] = { "xterm", slave.c_str(), nullptr };
-
-        posix_spawnattr_t sp;
-        posix_spawnattr_init( &sp );
-        posix_spawnattr_setflags( &sp, POSIX_SPAWN_SETPGROUP );
-        posix_spawnattr_setpgroup( &sp, 0 );
-        posix_spawnp( &_d.pid, "xterm", nullptr, &sp,
-                      const_cast< char ** >( argv ), environ );
-
-        char buf[8];
-        ::read( _d.masterfd, buf, 8 ); /* handshake */
-
-        struct termios tio;
-        tcgetattr( _d.slavefd, &tio );
-        tio.c_lflag = 0; /* no ECHO means we don't read things back */
-        tio.c_iflag = 0;
-        tio.c_oflag = 0;
-        tcsetattr( _d.slavefd, TCSANOW, &tio );
-
-        _d.buf.reset( new SBuf( _d.masterfd ) );
-        _d.stream.reset( new std::iostream( _d.buf.get() ) );
+        spawn child( exec... );
+        communicate comm( child.take_write_fd(), child.take_read_fd(), do_write, do_read );
+        comm.forever();
+        return child.close();
     }
+#endif
 
-    int fd() { return _d.masterfd; }
-    std::iostream &stream() { return *_d.stream; }
-
-    XTerm() = default;
-    XTerm( const XTerm & ) = delete;
-    XTerm( XTerm &&o )
+    template< typename Yield, unsigned BUFFER_SIZE = 512 >
+    struct pipe_read_lines
     {
-        _d = std::move( o._d );
-        o._d.pid = 0;
-    }
+        mutable char _buffer[ BUFFER_SIZE ];
+        mutable std::string _line_buffer;
+        Yield yield;
 
-    ~XTerm()
-    {
-        if ( _d.pid )
+        pipe_read_lines( Yield y ) : yield( y ) {}
+
+        bool operator()( const brq::fd &fd ) const
         {
-            kill( _d.pid, SIGTERM );
-            close( _d.masterfd );
-            close( _d.slavefd );
-            waitpid( _d.pid, nullptr, 0 );
-        }
-        _d.pid = 0;
-    }
-};
+            int bytes = read( fd.number(), _buffer, BUFFER_SIZE - 1 );
+            bool result = bytes > 0;
 
+            if ( bytes == -1 )
+            {
+                if ( errno == EAGAIN || errno == EWOULDBLOCK )
+                    return true;
+                throw brq::system_error( "pipe_read_lines: read" );
+            }
+
+            _buffer[ bytes ] = '\0';
+            _line_buffer.append( _buffer );
+
+            for ( int lf; ( lf = _line_buffer.find( '\n' ) ) != std::string::npos; )
+            {
+                auto line = _line_buffer.substr( 0, lf ); // don't include the newline
+
+                if constexpr ( std::is_same_v< decltype( yield( "" ) ), void > )
+                    yield( line );
+                else
+                    if ( !yield( line ) )
+                    {
+                        result = false;
+                        break;
+                    }
+
+                _line_buffer.erase( 0, lf + 1 );
+            }
+
+            return result;
+        }
+    };
+
+    struct pipe_feed
+    {
+        mutable string_builder _buffer_1, _buffer_2;
+        mutable bool _closed = true;
+        mutable std::string_view _todo;
+        mutable std::function< void() > _callback;
+
+        pipe_feed( std::string_view data ) : _todo( data ) {}
+        pipe_feed( std::function< void() > cb = {} ) : _closed( false ), _callback( cb ) {}
+
+        void set_callback( std::function< void() > cb ) { _callback = cb; }
+        void close() { _closed = true; }
+
+        template< typename arg_t >
+        auto operator<<( const arg_t &arg ) -> decltype( _buffer_2 << arg, *this )
+        {
+            return _buffer_2 << arg, *this;
+        }
+
+        bool shift_buffers() const
+        {
+            if ( _todo.empty() )
+            {
+                _buffer_1 = std::move( _buffer_2 );
+                _buffer_2.clear();
+                _todo = _buffer_1.data();
+                if ( _callback )
+                    _callback();
+            }
+
+            return !_todo.empty();
+        }
+
+        io_result operator()( const brq::fd &fd ) const
+        {
+            if ( !shift_buffers() )
+                return _closed ? io_result::done : io_result::blocked;
+
+            int bytes = write( fd.number(), _todo.data(), _todo.length() );
+            if ( _todo.length() && bytes == 0 )
+                return io_result::done;
+
+            if ( bytes == -1 )
+            {
+                if ( errno == EPIPE )
+                    return io_result::done;
+                if ( errno == EAGAIN || errno == EWOULDBLOCK )
+                    return io_result::ready;
+                raise< system_error >() << "pipe_feed: error writing " << _todo.length() << " bytes";
+            }
+
+            _todo.remove_prefix( bytes );
+
+            if ( !shift_buffers() )
+                return _closed ? io_result::done : io_result::blocked;
+            else
+                return io_result::ready;
+        }
+    };
+
+    struct xterm
+    {
+        struct
+        {
+            int pid = 0;
+            int masterfd, slavefd;
+
+            std::unique_ptr< std::iostream > stream;
+            std::unique_ptr< brq::posix_buf > buf;
+        } _d;
+
+        struct sbuf : brq::posix_buf
+        {
+            using brq::posix_buf::posix_buf;
+
+            int sync()
+            {
+                char tmp[ _buf_size * 2 ];
+                int i = 0;
+                for ( auto p = pbase(); p < pptr(); ++p )
+                {
+                    if ( *p == '\n' )
+                        tmp[ i++ ] = '\r';
+                    tmp[ i++ ] = *p;
+                }
+                do_sync( tmp, i );
+                return 0;
+            }
+        };
+
+        void open()
+        {
+            _d.masterfd = posix_openpt( O_RDWR );
+            if ( grantpt( _d.masterfd ) )
+                throw std::system_error( errno, std::system_category(),
+                                         "Could not grantpt()." );
+            if ( unlockpt( _d.masterfd ) )
+                throw std::system_error( errno, std::system_category(),
+                                         "Could not unlockpt()." );
+
+            const char *slavepts = ptsname( _d.masterfd );
+            if ( !slavepts )
+                throw std::system_error( errno, std::system_category(),
+                                         "Could not ptsname()." );
+            _d.slavefd = ::open( slavepts, O_RDWR );
+            if ( _d.slavefd < 0 )
+                throw std::system_error( errno, std::system_category(),
+                                         "Could not open slave PTS." );
+
+            std::string slave = std::string( "-S" ) +
+                                slavepts + "/" + std::to_string( _d.slavefd );
+            const char *argv[] = { "xterm", slave.c_str(), nullptr };
+
+            posix_spawnattr_t sp;
+            posix_spawnattr_init( &sp );
+            posix_spawnattr_setflags( &sp, POSIX_SPAWN_SETPGROUP );
+            posix_spawnattr_setpgroup( &sp, 0 );
+            posix_spawnp( &_d.pid, "xterm", nullptr, &sp,
+                          const_cast< char ** >( argv ), environ );
+
+            char buf[8];
+            ::read( _d.masterfd, buf, 8 ); /* handshake */
+
+            struct termios tio;
+            tcgetattr( _d.slavefd, &tio );
+            tio.c_lflag = 0; /* no ECHO means we don't read things back */
+            tio.c_iflag = 0;
+            tio.c_oflag = 0;
+            tcsetattr( _d.slavefd, TCSANOW, &tio );
+
+            _d.buf.reset( new sbuf( _d.masterfd ) );
+            _d.stream.reset( new std::iostream( _d.buf.get() ) );
+        }
+
+        int fd() { return _d.masterfd; }
+        std::iostream &stream() { return *_d.stream; }
+
+        xterm() = default;
+        xterm( const xterm & ) = delete;
+        xterm( xterm &&o )
+        {
+            _d = std::move( o._d );
+            o._d.pid = 0;
+        }
+
+        ~xterm()
+        {
+            if ( _d.pid )
+            {
+                kill( _d.pid, SIGTERM );
+                close( _d.masterfd );
+                close( _d.slavefd );
+                waitpid( _d.pid, nullptr, 0 );
+            }
+            _d.pid = 0;
+        }
+    };
 }
 
-namespace t_proc {
+namespace t_brq
+{
+    struct test_spawn
+    {
+        TEST( basic_true )
+        {
+            auto r = brq::spawn_and_wait( "true" );
+            ASSERT_EQ( r.exitcode(), 0 );
+            ASSERT_EQ( r.signal(), 0 );
+            ASSERT( r );
+        }
 
-struct TestSpawn {
-    TEST( basic_true ) {
-        auto r = proc::spawnAndWait( "true" );
-        ASSERT_EQ( r.exitcode(), 0 );
-        ASSERT_EQ( r.signal(), 0 );
-        ASSERT( r );
-    }
+        TEST( basic_false )
+        {
+            auto r = brq::spawn_and_wait( "false" );
+            ASSERT_LT( 0, r.exitcode() );
+            ASSERT_EQ( r.signal(), 0 );
+            ASSERT( !r );
+        }
 
-    TEST( basic_false ) {
-        auto r = proc::spawnAndWait( "false" );
-        ASSERT_LT( 0, r.exitcode() );
-        ASSERT_EQ( r.signal(), 0 );
-        ASSERT( !r );
-    }
+        TEST( echo1 )
+        {
+            auto r = brq::spawn_and_wait( brq::capture_stdout, "printf", "a" );
+            ASSERT( r );
+            ASSERT_EQ( r.out(), "a" );
+            ASSERT_EQ( r.err(), "" );
+        }
 
-    TEST( echo1 ) {
-        auto r = proc::spawnAndWait( proc::CaptureStdout, "printf", "a" );
-        ASSERT( r );
-        ASSERT_EQ( r.out(), "a" );
-        ASSERT_EQ( r.err(), "" );
-    }
+        TEST( echo2 )
+        {
+            auto r = brq::spawn_and_wait( brq::capture_stdout | brq::capture_stderr, "printf", "a" );
+            ASSERT( r );
+            ASSERT_EQ( r.out(), "a" );
+            ASSERT_EQ( r.err(), "" );
+        }
 
-    TEST( echo2 ) {
-        auto r = proc::spawnAndWait( proc::CaptureStdout | proc::CaptureStderr, "printf", "a" );
-        ASSERT( r );
-        ASSERT_EQ( r.out(), "a" );
-        ASSERT_EQ( r.err(), "" );
-    }
+        TEST( echo_spec )
+        {
+            auto r = brq::spawn_and_wait( brq::capture_stdout, "printf", "a\nb" );
+            ASSERT( r );
+            ASSERT_EQ( r.out(), "a\nb" );
+            ASSERT_EQ( r.err(), "" );
+        }
 
-    TEST( echoSpec ) {
-        auto r = proc::spawnAndWait( proc::CaptureStdout, "printf", "a\nb" );
-        ASSERT( r );
-        ASSERT_EQ( r.out(), "a\nb" );
-        ASSERT_EQ( r.err(), "" );
-    }
+        TEST( shell_echo_stdout )
+        {
+            auto r = brq::shell_spawn_and_wait( brq::capture_stdout, "printf a" );
+            ASSERT( r );
+            ASSERT_EQ( r.out(), "a" );
+            ASSERT_EQ( r.err(), "" );
+        }
 
-    TEST( shellEchoStdout ) {
-        auto r = proc::shellSpawnAndWait( proc::CaptureStdout, "printf a" );
-        ASSERT( r );
-        ASSERT_EQ( r.out(), "a" );
-        ASSERT_EQ( r.err(), "" );
-    }
+        TEST( shell_echo_stderr )
+        {
+            auto r = brq::shell_spawn_and_wait( brq::capture_stdout |
+                                                brq::capture_stderr, "printf a >&2" );
+            ASSERT( r );
+            ASSERT_EQ( r.out(), "" );
+            ASSERT_EQ( r.err(), "a" );
+        }
 
-    TEST( shellEchoStderr ) {
-        auto r = proc::shellSpawnAndWait( proc::CaptureStdout | proc::CaptureStderr, "printf a >&2" );
-        ASSERT( r );
-        ASSERT_EQ( r.out(), "" );
-        ASSERT_EQ( r.err(), "a" );
-    }
+        TEST( in_basic )
+        {
+            auto r = brq::spawn_and_wait( brq::stdin_string( "abcbd" ) |
+                                          brq::capture_stdout | brq::capture_stderr,
+                                         "sed", "s/b/x/g" );
+            ASSERT( r );
+            ASSERT_EQ( r.out(), "axcxd" );
+            ASSERT_EQ( r.err(), "" );
+        }
 
-    TEST( in_basic ) {
-        auto r = proc::spawnAndWait( proc::StdinString( "abcbd" ) | proc::CaptureStdout | proc::CaptureStderr,
-                                     "sed", "s/b/x/g" );
-        ASSERT( r );
-        ASSERT_EQ( r.out(), "axcxd" );
-        ASSERT_EQ( r.err(), "" );
-    }
-    TEST( in_lined ) {
-        auto r = proc::spawnAndWait( proc::StdinString( "abcbd\nebfg\n" ) | proc::CaptureStdout | proc::CaptureStderr,
-                                     "sed", "s/b/x/g" );
-        ASSERT( r );
-        ASSERT_EQ( r.out(), "axcxd\nexfg\n" );
-        ASSERT_EQ( r.err(), "" );
-    }
-};
+        TEST( in_lined )
+        {
+            auto r = brq::spawn_and_wait( brq::stdin_string( "abcbd\nebfg\n" ) |
+                                          brq::capture_stdout | brq::capture_stderr,
+                                          "sed", "s/b/x/g" );
+            ASSERT( r );
+            ASSERT_EQ( r.out(), "axcxd\nexfg\n" );
+            ASSERT_EQ( r.err(), "" );
+        }
+    };
 
-};
+    struct test_pipethrough
+    {
+        using strs = std::vector< std::string >;
 
+        TEST( lines )
+        {
+            strs out;
+            brq::pipethrough( brq::pipe_feed( "foo\nbar\nbaz\n" ),
+                              brq::pipe_read_lines( [&]( auto l ){ out.emplace_back( l ); }),
+                              "cat" );
+            ASSERT_EQ( out, strs{ "foo", "bar", "baz" } );
+        }
+
+        TEST( noread )
+        {
+            std::string out;
+            brq::pipethrough( []( const brq::fd & ){ return brq::io_result::done; },
+                              brq::pipe_read_lines( [&]( auto l ){ out = l; }),
+                              "echo", "-e", "lorem ipsum\\nhello world" );
+            ASSERT_EQ( out, "hello world" );
+        }
+
+        TEST( empty )
+        {
+            int n = 0;
+            brq::pipethrough( brq::pipe_feed( "this\ngets\ndiscarded" ),
+                              brq::pipe_read_lines( [&]( auto ){ ++n; }),
+                              "sh", "-c", "> /dev/null" );
+            ASSERT_EQ( n, 0 );
+        }
+
+        TEST( retval )
+        {
+            int n = 0;
+            int ret = brq::pipethrough( []( const brq::fd & ){ return brq::io_result::done; },
+                                        brq::pipe_read_lines( [&]( auto ){ ++n; }),
+                                        "true" );
+            ASSERT_EQ( ret, 0 );
+            ASSERT_EQ( n, 0 );
+            ret = brq::pipethrough( []( const brq::fd & ){ return brq::io_result::done; },
+                                    brq::pipe_read_lines( [&]( auto ){ ++n; }),
+                                    "false" );
+            ASSERT_LT( 0, ret );
+            ASSERT_EQ( n, 0 );
+
+            try {
+                ret = brq::pipethrough( []( brq::fd & ){ return brq::io_result::done; },
+                                        brq::pipe_read_lines( [&]( auto ){ ++n; }),
+                                        "/dev/null" );
+            } catch ( ... ) {
+                // this only happens in the child
+                abort();
+            }
+            ASSERT_LT( ret, 0 );
+            ASSERT_EQ( n, 0 );
+        }
+    };
 }
 
 // vim: syntax=cpp tabstop=4 shiftwidth=4 expandtab ft=cpp

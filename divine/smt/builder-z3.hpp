@@ -36,9 +36,23 @@ struct Z3
     Node unary( brq::smt_op, Node, int );
     Node extract( Node n, std::pair< int, int > );
     Node binary( brq::smt_op, Node, Node, int );
+
     Node constant( uint64_t value, int bw );
     Node constant( bool );
-    Node variable( int id, int bw );
+    Node constant( float );
+    Node constant( double );
+
+    Node variable( int id, brq::smt_op op );
+    Node array( int id, brq::smt_array_type );
+
+    Node load( Node array, Node offset, int bw );
+    Node store( Node array, Node offset, Node value, int bw );
+
+    z3::expr expr( Z3_ast );
+    z3::sort fpa_sort( int bw );
+
+    template< typename T >
+    z3::expr make_fpa_val( T v, int bw );
 
     z3::context &_ctx;
 };

@@ -21,6 +21,7 @@
 #include <vector>
 #include <deque>
 #include <unordered_map>
+#include <algorithm>
 #include "brick-assert"
 
 namespace brq::diff_impl
@@ -239,10 +240,10 @@ namespace brq
                     ++ a_begin;
                     ++ b_begin;
                 }
-                else if ( *b_begin != lcs.front() )
-                    *out++ = hunk( hunk::w_add, *b_begin++ );
                 else if ( *a_begin != lcs.front() )
                     *out++ = hunk( hunk::w_del, *a_begin++ );
+                else if ( *b_begin != lcs.front() )
+                    *out++ = hunk( hunk::w_add, *b_begin++ );
                 else
                     UNREACHABLE( "impossible case" );
             }
@@ -254,5 +255,17 @@ namespace brq
         }
 
         return out;
+    }
+
+    template< typename seq1_t, typename seq2_t >
+    std::vector< diff_hunk< typename seq1_t::value_type > > patience_diff( seq1_t a, seq2_t b )
+    {
+        std::vector< typename seq1_t::value_type > a_vec, b_vec;
+        std::vector< diff_hunk< typename seq1_t::value_type > > out_vec;
+        std::copy( a.begin(), a.end(), std::back_inserter( a_vec ) );
+        std::copy( b.begin(), b.end(), std::back_inserter( b_vec ) );
+        patience_diff( a_vec.begin(), a_vec.end(), b_vec.begin(), b_vec.end(),
+                       std::back_inserter( out_vec ) );
+        return out_vec;
     }
 }

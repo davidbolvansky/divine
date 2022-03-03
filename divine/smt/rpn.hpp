@@ -55,9 +55,50 @@ namespace divine::smt
         for ( auto &atom : expr )
         {
             auto op = atom.op;
-
-            if      ( atom.varid() )      push( bld.variable( atom.varid(), atom.bw() ), atom.bw() );
-            else if ( atom.is_const() )   push( bld.constant( atom.value(), atom.bw() ), atom.bw() );
+            if ( atom.varid() )
+            {
+                push( bld.variable( atom.varid(), op ), atom.bw() );
+            }
+            else if ( atom.is_const() )
+            {
+                auto bw = atom.bw();
+                if ( atom.is_integral() )
+                {
+                    push( bld.constant( atom.value(), bw ), bw );
+                }
+                else if ( atom.is_float() )
+                {
+                    switch ( bw )
+                    {
+                        case 32 :
+                            push( bld.constant( atom.template fpa_value< float >() ) , bw ); break;
+                        case 64 :
+                            push( bld.constant( atom.template fpa_value< double >() ), bw ); break;
+                        default : UNREACHABLE( "unsupported floating point constant" );
+                    }
+                } else
+                {
+                    UNREACHABLE( "unsupported constant type" );
+                }
+            }
+            else if ( atom.is_array() )
+            {
+                auto type = atom.array_type();
+                push( bld.array( type.id, type ), type.bitwidth );
+            }
+            else if ( op == brq::smt_op::load )
+            {
+                auto [ off, obw ] = pop();
+                auto [ arr, abw ] = pop();
+                push( bld.load( arr, off, atom.bw( abw ) ), atom.bw( abw ) );
+            }
+            else if ( op == brq::smt_op::store )
+            {
+                auto [ val, vbw ] = pop();
+                auto [ off, obw ] = pop();
+                auto [ arr, abw ] = pop();
+                push( bld.store( arr, off, val, vbw ), atom.bw( abw ) );
+            }
             else if ( atom.is_extract() )
             {
                 auto [ arg, bw ] = pop();

@@ -1,0 +1,107 @@
+// -*- mode: C++; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+
+/*
+ * Copyright (C) 2019 Petr Rockai <code@fixp.eu>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+#pragma once
+#include "brick-assert"
+
+namespace brq::sql
+{
+    template< bool sub = false, typename stream, typename V >
+    static stream &print( stream &s, const V &v, int &id )
+    {
+        if constexpr ( is_set< V >::value )
+        {
+            int i = 0;
+            if ( v.empty() )
+                s << "( select null::" << sql_type< typename V::value_type >() << " where false";
+            for ( const auto &e : v )
+                s << ( i ++ ? ", " : "( " ), print( s, e, id );
+            s << " )";
+        }
+        else if constexpr ( is_value< V > )
+        {
+            if ( id >= 0 )
+                s << "$" << id++ << "::" << sql_type< V >();
+            else if constexpr ( std::is_same_v< V, std::nullopt_t > )
+                s << "null";
+            else
+                s << "'" << v << "'::" << sql_type< V >();
+        }
+        else if constexpr ( std::is_same_v< V, std::nullopt_t > )
+            s << "null";
+        else if constexpr ( is_optional< V >::value )
+        {
+            if constexpr ( !std::is_same_v< V, std::nullopt_t > )
+                if ( v.has_value() )
+                    return print( s, *v, id );
+
+            s << "null::" << sql_type< V >();
+        }
+        else if constexpr ( std::is_same_v< V, where_operator > )
+            s << v.sql;
+        else if constexpr ( brq::is_list_v< V > )
+        {
+            bool first = true;
+            auto item = [&]( const auto &i )
+            {
+                s << ( first ? "" : ", " );
+                print< sub >( s, i, id );
+                first = false;
+            };
+            v.each( item );
+            s << " ";
+        }
+        else if constexpr ( V::is_function )
+            s << v.get_name( v ), v.print( s, id );
+        else if constexpr ( V::is_column )
+            s << v.get_name( v ) << "::" << sql_type< typename V::type >();
+        else if constexpr ( V::is_query )
+        {
+            if ( sub ) s << "( ";
+            v.print( s, id ), v.print_tail( s, id );
+            if ( sub ) s << " )";
+        }
+        else if constexpr ( V::is_expr )
+            v.print( s, id );
+        else
+            v.give_me_a_build_error();
+
+        return s;
+    }
+
+    template< typename stmt, typename V >
+    static auto bind( stmt &s, const V &v )
+    {
+        if constexpr ( is_set< V >::value )
+            for ( const auto &e : v )
+                bind( s, e );
+        else if constexpr ( is_value< V > ) s.bind( v ) ;
+        else if constexpr ( is_optional< V >::value )
+        {
+            if constexpr ( !std::is_same_v< V, std::nullopt_t > )
+                if ( v.has_value() )
+                    bind( s, *v );
+        }
+        else if constexpr ( std::is_same_v< V, where_operator > ) /* nothing */ ;
+        else if constexpr ( is_list_v< V > ) /* nothing */ ;
+        else if constexpr ( V::is_function ) v.bind( s ) ;
+        else if constexpr ( V::is_column ) /* nothing */ ;
+        else
+            v.bind( s );
+    }
+}

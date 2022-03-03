@@ -1,0 +1,936 @@
+// -*- mode: C++; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+
+/*
+ * Copyright (C) 2019 Petr Rockai <code@fixp.eu>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+#pragma once
+#include "brick-assert"
+#include "brick-sql-data"
+#include "brick-sql-exec"
+#include "brick-sql-expr"
+
+namespace brq::sql
+{
+    struct txn;
+
+    struct query_base
+    {
+        static constexpr bool is_column = false;
+        static constexpr bool is_query = true;
+        static constexpr bool is_expr = true;
+        static constexpr bool is_enum = false;
+        static constexpr bool is_function = false;
+        using type = unknown_type;
+
+        template< typename stmt, typename conn_t, typename query_t >
+        static stmt _exec_query( conn_t &conn, query_t &q )
+        {
+            stmt s( conn, q );
+            q.bind( s );
+            s.exec();
+            return s;
+        }
+
+        template< typename stmt, typename query_t >
+        stmt _exec_self( query_t *q )
+        {
+            return this->_exec_query< stmt >( q->txn()->conn(), *q );
+        }
+
+        void print_tail( string_builder &, int & ) const {}
+    };
+
+    template< typename q, typename col >
+    constexpr bool has_column = q::stmt::columns::template has< col >;
+
+    template< typename > struct raw_sql;
+
+    template< typename query >
+    struct extend : query_base
+    {
+        using stmt      = typename query::stmt;
+        using columns_t = typename query::columns_t;
+        using type      = typename query::type;
+
+        query _query;
+        sql::conn &conn() { return _query.conn(); }
+        sql::txn *txn() { return _query.txn(); }
+        extend( query q ) : _query( q ) {}
+
+        void set_skip_select() { _query.set_skip_select(); }
+        auto order_columns() const { return _query.order_columns(); }
+        template< typename T > stmt _exec( T *t ) { return query_base::_exec_self< stmt >( t ); }
+
+        template< typename stmt >
+        void bind( stmt &s ) const { _query.bind( s ); }
+
+        void print( string_builder &s, int &id ) const
+        {
+            _query.print( s, id );
+        }
+
+        void print_tail( string_builder &s, int &id ) const
+        {
+            _query.print_tail( s, id );
+        }
+    };
+
+    template< typename query >
+    struct limit_clause : extend< query >
+    {
+        int64_t _limit;
+
+        limit_clause( query &q, int64_t l ) : extend< query >( q ), _limit( l ) {}
+
+        auto exec() { return this->_exec( this ); }
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            this->_query.print( s, id );
+            s << " limit $" << id++;
+        }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            this->_query.bind( s );
+            sql::bind( s, _limit );
+        }
+
+        sql::raw_sql< limit_clause > raw_sql( std::string_view sv ) { return { *this, sv }; }
+    };
+
+    template< typename select, typename... cols >
+    struct group_by;
+
+    template< typename query, typename... cols >
+    struct order_clause : extend< query >
+    {
+        brq::cons_list_t< cols... > _cols;
+        using extend< query >::extend;
+        order_clause( query &q, cols... cs ) : extend< query >( q ), _cols( cs... ) {}
+
+        template< typename cols_t >
+        order_clause( query &q, cols_t cs ) : extend< query >( q ), _cols( cs ) {}
+
+        auto exec() { return this->_exec( this ); }
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            this->_query.print( s, id );
+            s << " order by ";
+            auto l = this->order_columns().cat( _cols );
+            int count = 0;
+            auto print_one = [&]( auto &c )
+            {
+                s << ( count++ ? ", " : "" );
+                sql::print( s, c, id );
+                if ( !c.is_asc )
+                    s << " desc ";
+            };
+            l.each( print_one );
+        }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            this->_query.bind( s );
+            _cols.each( [&]( const auto &c ) { sql::bind( s, c ); } );
+        }
+
+        sql::raw_sql< order_clause > raw_sql( std::string_view sv ) { return { *this, sv }; }
+
+        template< typename... ct, typename... et > [[nodiscard]]
+        order_clause< query, cols..., ct..., et... > order_by( et... ex )
+        {
+            return { this->_query, _cols.cat( brq::cons_list( ex... ) ) };
+        }
+
+        limit_clause< order_clause > limit( int l ) { return { *this, l }; }
+    };
+
+    template< typename query, typename expr >
+    struct where_clause : extend< query >
+    {
+        expr _expr;
+        const char *_clause;
+        where_clause( query q, const expr &e, const char *c = "where" )
+            : extend< query >( q ), _expr( e ), _clause( c )
+        {}
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            this->_query.print( s, id );
+            s << " " << _clause << " ";
+            sql::print( s, _expr, id );
+        }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            this->_query.bind( s );
+            sql::bind( s, _expr );
+        }
+
+        template< typename... group_cols > [[nodiscard]]
+        group_by< where_clause, group_cols... > group_by() { return { *this }; }
+
+        template< typename... ct, typename... et > [[nodiscard]]
+        order_clause< where_clause, ct..., et... > order_by( et... ex ) { return { *this, ex... }; }
+
+        template< typename we_t > [[nodiscard]]
+        auto where( we_t we ) { return sql::where_clause( this->_query, _expr && we ); }
+
+        limit_clause< where_clause > limit( int l ) { return { *this, l }; }
+
+        sql::raw_sql< where_clause > raw_sql( std::string_view sv ) { return { *this, sv }; }
+
+        auto exec() { return this->_exec( this ); }
+    };
+
+    template< typename select, typename... cols >
+    struct group_by : extend< select >
+    {
+        using extend< select >::extend;
+        auto exec() { return this->_exec( this ); }
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            this->_query.print( s, id );
+            s << " group by ";
+            print_columns( s, cons_list( cols()... ) );
+        }
+
+        template< typename we_t > [[nodiscard]]
+        where_clause< group_by, we_t > having( const we_t &we ) { return { *this, we, "having" }; }
+
+        template< typename... ct, typename... et > [[nodiscard]]
+        order_clause< group_by, ct..., et... > order_by( et... ex ) { return { *this, ex... }; }
+    };
+
+    enum class join_type { inner, left, right };
+
+    template< typename T >
+    using underlying = std::conditional_t< T::is_view && T::columns::car_t::is_qualified &&
+                                           T::columns::car_t::is_primary,
+                                           typename T::columns::car_t::qualifier, T >;
+
+    template< typename select, typename tab, typename on_t = brq::nil >
+    struct select_join : extend< select >
+    {
+        join_type _type;
+        on_t _join_on;
+
+        using tables = brq::cons< tab, typename select::tables >;
+        select_join( const select &s, join_type t = join_type::inner, on_t on = on_t() )
+            : extend< select >( s ), _type( t ), _join_on( on )
+        {}
+
+        auto exec() { return this->_exec( this ); }
+
+        template< typename stream, typename tabs_left = typename select::tables >
+        void print( stream &s, int &id ) const
+        {
+            using tab_left = typename tabs_left::car_t;
+            using tab_right = tab;
+
+            using tab_left_u  = underlying< tab_left >;
+            using tab_right_u = underlying< tab_right >;
+
+            std::vector< std::string > foreign_column;
+            std::vector< std::string > primary_column;
+
+            auto find_foreign_left = [&]( auto t )
+            {
+                using col = unqualify< decltype( t ) >;
+                if constexpr ( t.is_foreign )
+                    if constexpr ( std::is_same_v< typename col::table, tab_left_u > )
+                        foreign_column.emplace_back( col::get_name( col() ) );
+            };
+
+            auto find_foreign_right = [&]( auto t )
+            {
+                using col = unqualify< decltype( t ) >;
+                if constexpr ( t.is_foreign )
+                    if constexpr ( std::is_same_v< typename col::table, tab_right_u > )
+                        foreign_column.emplace_back( col::get_name( col() ) );
+            };
+
+            auto find_primary = [&]( auto t )
+            {
+                if constexpr ( t.is_primary )
+                {
+                    if constexpr ( t.is_qualified )
+                    {
+                        using bare = typename decltype( t )::bare;
+                        primary_column.emplace_back( bare::get_name( bare() ) );
+                    }
+                    else
+                        primary_column.emplace_back( t.get_name( t ) );
+                }
+            };
+
+            brq::string_builder cond;
+
+            auto tab_r = tab_right::get_name( tab_right() ),
+                 tab_l = tab_left::get_name( tab_left() );
+
+            auto emit_join = [&]( auto tab_p, auto tab_f )
+            {
+                ASSERT_EQ( primary_column.size(), foreign_column.size(),
+                           primary_column, foreign_column );
+
+                for ( int i = 0; i < primary_column.size(); ++ i )
+                    cond <<    "\"" << tab_f << "\"." << foreign_column[ i ]
+                         << " = \"" << tab_p << "\"." << primary_column[ i ]
+                         << ( i < primary_column.size() - 1 ? " and " : "" );
+            };
+
+            if constexpr ( std::is_same_v< on_t, brq::nil > )
+            {
+                typename tab_right::columns().each( find_foreign_left );
+                typename tab_left::columns().each( find_primary );
+
+                if ( !foreign_column.empty() && !primary_column.empty() )
+                    emit_join( tab_l, tab_r );
+                else
+                {
+                    primary_column.clear();
+                    foreign_column.clear();
+                    typename tab_right::columns().each( find_primary );
+                    typename tab_left::columns().each( find_foreign_right );
+
+                    if ( !foreign_column.empty() && !primary_column.empty() )
+                        emit_join( tab_r, tab_l );
+                    else if constexpr ( !tabs_left::cdr_t::empty )
+                        return print< stream, typename tabs_left::cdr_t >( s, id );
+                    else
+                        brq::raise< error >() << "could not find join key on "
+                                              << tab_l << " x " << tab_r;
+                }
+            }
+
+            this->_query.print( s, id );
+
+            switch ( _type )
+            {
+                case join_type::inner: s << " inner"; break;
+                case join_type::left: s << " left"; break;
+                case join_type::right: s << " right"; break;
+            }
+
+            s << " join " << tab_right::declare( tab_right() ) << " on ";
+            if constexpr ( std::is_same_v< on_t, brq::nil > )
+                s << cond.buffer();
+            else
+                sql::print( s, _join_on, id );
+        }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            this->_query.bind( s );
+            sql::bind( s, _join_on );
+        }
+
+        template< typename expr_t > [[nodiscard]]
+        select_join< select, tab, expr_t > on( expr_t e ) { return { this->_query, _type, e }; }
+
+        template< typename we_t > [[nodiscard]]
+        where_clause< select_join, we_t > where( const we_t &we ) { return { *this, we }; }
+
+        template< typename table > [[nodiscard]]
+        select_join< select_join, table > join() const { return { *this }; }
+
+        template< typename table > [[nodiscard]]
+        select_join< select_join, table > left_join() const { return { *this, join_type::left }; }
+
+        template< typename table > [[nodiscard]]
+        select_join< select_join, table > right_join() const { return { *this, join_type::right }; }
+
+        template< typename... group_cols > [[nodiscard]]
+        group_by< select_join, group_cols... > group_by() { return { *this }; }
+
+        template< typename... ct, typename... et > [[nodiscard]]
+        order_clause< select_join, ct..., et... > order_by( et... ex ) { return { *this, ex... }; }
+
+        sql::raw_sql< select_join > raw_sql( std::string_view sv ) { return { *this, sv }; }
+    };
+
+    template< typename query >
+    struct raw_sql : extend< query >
+    {
+        raw_sql( const query &q, std::string_view sv ) : extend< query >( q ), _sql( sv ) {}
+        std::string _sql;
+        auto exec() { return this->_exec( this ); }
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            this->_query.print( s, id );
+            s << " " << _sql;
+        }
+
+        template< typename table > [[nodiscard]]
+        select_join< raw_sql, table > join() const { return { *this }; }
+
+        template< typename table > [[nodiscard]]
+        select_join< raw_sql, table > left_join() const { return { *this, join_type::left }; }
+
+        template< typename table > [[nodiscard]]
+        select_join< raw_sql, table > right_join() const { return { *this, join_type::right }; }
+
+        template< typename... group_cols > [[nodiscard]]
+        group_by< raw_sql, group_cols... > group_by() { return { *this }; }
+
+        template< typename we_t > [[nodiscard]]
+        where_clause< raw_sql, we_t > where( const we_t &we ) { return { *this, we }; }
+
+        template< typename... ct, typename... et > [[nodiscard]]
+        order_clause< raw_sql, ct..., et... > order_by( et... ex ) { return { *this, ex... }; }
+    };
+
+    template< typename head > auto sql_join( const head &q ) { return q; }
+
+    template< typename join, typename... joins, typename head >
+    auto sql_join( const head &q )
+    {
+        return sql_join< joins... >( q.template join< join >() );
+    }
+
+    template< typename select, typename tab >
+    struct select_tab : extend< select >
+    {
+        using tables = brq::cons_list_t< tab >;
+        using extend< select >::extend;
+        auto exec() { return this->_exec( this ); }
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            this->_query.print( s, id );
+            s << " from \"" << get_name( tab() ) << "\"";
+        }
+
+        template< typename table, typename... joins > [[nodiscard]]
+        auto join() const { return sql_join< joins... >( select_join< select_tab, table >( *this ) ); }
+
+        template< typename table > [[nodiscard]]
+        select_join< select_tab, table > left_join() const { return { *this, join_type::left }; }
+
+        template< typename table > [[nodiscard]]
+        select_join< select_tab, table > right_join() const { return { *this, join_type::right }; }
+
+        template< typename... group_cols > [[nodiscard]]
+        sql::group_by< select_tab, group_cols... > group_by() { return { *this }; }
+
+        template< typename we_t > [[nodiscard]]
+        where_clause< select_tab, we_t > where( const we_t &we ) { return { *this, we }; }
+
+        template< typename... ct, typename... et > [[nodiscard]]
+        order_clause< select_tab, ct..., et... > order_by( et... ex ) { return { *this, ex... }; }
+
+        [[nodiscard]] sql::raw_sql< select_tab > raw_sql( std::string_view sv ) { return { *this, sv }; }
+    };
+
+    template< typename... > struct select;
+
+    template< typename select, typename... views >
+    struct select_with : extend< select >
+    {
+        brq::cons_list_t< views... > _views;
+        using extend< select >::extend;
+        select_with( const select &q, const views &... vs ) : extend< select >( q ), _views( vs... ) {}
+        auto exec() { return this->_exec( this ); }
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            int i = 0;
+            auto fmt = [&]( auto v )
+            {
+                using view = decltype( v );
+                s << ( i++ ? ", " : "with recursive " );
+                s << v.declare( v ) << " ";
+                print_columns( s, typename view::columns::template map_t< unqualify >(), "( ", " )" );
+                s << " as ";
+                sql::print< true >( s, v.construct(), id );
+            };
+            _views.each( fmt );
+            this->_query.print( s, id );
+        }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            _views.each( [&]( const auto &v ) { sql::bind( s, v.construct() ); } );
+            this->_query.bind( s );
+        }
+
+        template< typename table, typename... joins > [[nodiscard]]
+        auto from() { return sql_join< joins... >( select_tab< select_with, table >( *this ) ); }
+    };
+
+    template< typename... views, typename query > auto with( query q )
+    {
+        return select_with< query, views... >( q );
+    };
+
+    template< typename select, typename... cols >
+    struct select_distinct : extend< select >
+    {
+        brq::cons_list_t< cols... > _cols;
+        auto order_columns() const { return _cols; }
+        using extend< select >::extend;
+        auto exec() { return this->_exec( this ); }
+
+        template< typename... et >
+        select_distinct( const select &q, et... e ) : extend< select >( q ), _cols( e... ) {}
+        select_distinct( brq::cons_list_t< cols... > cs ) : _cols( cs ) {}
+
+        template< typename... ct, typename... et >
+        auto columns( et... e )
+        {
+            auto ext_select = this->_query.template columns< ct..., et... >( e... );
+            ext_select._skip_select = true;
+            return select_distinct< decltype( ext_select ), cols... >( ext_select, _cols );
+        }
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            s << "select distinct ";
+            if constexpr ( sizeof...( cols ) > 0 )
+                s << " on ( ", sql::print( s, _cols, id ), s << " ) ";
+            this->_query.print( s, id );
+        }
+
+        template< typename table, typename... joins > [[nodiscard]]
+        auto from() { return sql_join< joins... >( select_tab< select_distinct, table >( *this ) ); }
+
+        template< typename... ct, typename... et > [[nodiscard]]
+        select_with< select_distinct, ct..., et... > with( et... e ) { return { *this, e... }; }
+    };
+
+    template< typename... cols >
+    struct query_head : query_base, with_columns< cols... >
+    {
+        using stmt = sql::stmt< cols... >;
+        sql::txn *_txn;
+        sql::txn *txn() { return _txn; }
+        sql::conn &conn();
+
+        query_head( sql::txn *t = nullptr ) : _txn( t ) {}
+
+        brq::nil order_columns() const { return {}; }
+
+        template< typename stmt >
+        void bind( stmt & ) const {}
+
+        template< typename T > stmt _exec( T *t ) { return query_base::_exec_self< stmt >( t ); }
+    };
+
+    template< typename... cols >
+    struct select : query_head< cols... >
+    {
+        using columns_t = typename query_head< cols...>::columns;
+        columns_t _cols;
+        bool _skip_select = false;
+        using type = std::conditional_t< sizeof...( cols ) == 1,
+                                         typename type_of< typename columns_t::car_t >::type,
+                                         aggregate_type >;
+
+        using query_head< cols... >::query_head;
+        select( sql::txn *t, cols... e ) : query_head< cols... >( t ), _cols( e... ) {}
+        select( cols... e ) : _cols( e... ) {}
+        template < typename list >
+        select( sql::txn *t, list cs ) : query_head< cols... >( t ), _cols( cs ) {}
+        select( brq::cons_list_t< cols... > cs ) : _cols( cs ) {}
+
+        template< typename... ct, typename... et >
+        select< cols..., ct..., et... > columns( et... e )
+        {
+            return { this->txn(), _cols.cat( brq::cons_list( ct()..., e... ) ) };
+        }
+
+        template< typename table, typename... joins > [[nodiscard]]
+        auto from() { return sql_join< joins... >( select_tab< select, table >( *this ) ); }
+
+        template< typename we_t > [[nodiscard]]
+        where_clause< select, we_t > where( const we_t &we ) { return { *this, we }; }
+
+        template< typename... ct, typename... et > [[nodiscard]]
+        select_distinct< select, ct..., et... > distinct( et... e )
+        {
+            auto s = *this;
+            s._skip_select = true;
+            return { s, e... };
+        }
+
+        template< typename... ct, typename... et > [[nodiscard]]
+        select_with< select, ct..., et... > with( et... e )
+        {
+            return { *this, e... };
+        }
+
+        void set_skip_select() { _skip_select = true; }
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            if ( !_skip_select )
+                s << "select ";
+            sql::print< true >( s, _cols, id );
+        }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            _cols.each( [&]( const auto &c ) { sql::bind( s, c ); } );
+        }
+
+        using typename query_head< cols... >::stmt;
+        stmt exec() { return query_base::_exec_self< stmt >( this ); }
+        sql::raw_sql< select > raw_sql( std::string_view sv ) { return { *this, sv }; }
+    };
+
+    template< typename T > constexpr bool is_str_v = std::is_same_v< T, const std::string & >;
+    template< typename T > constexpr bool is_u32s_v = std::is_same_v< T, const std::u32string & >;
+    template< bool C, typename A, typename B > using cond_t = std::conditional_t< C, A, B >;
+    template< typename T > using to_u32v = cond_t< is_u32s_v< T >, std::u32string_view, T >;
+    template< typename T > using to_view = cond_t< is_str_v< T >, std::string_view, to_u32v< T > >;
+
+    template< typename query_t, typename cols_t, typename args_t >
+    struct update_set : extend< query_t >
+    {
+        args_t _args;
+
+        auto exec() { return this->_exec( this ); }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            this->_query.bind( s );
+            _args.each( [&]( auto &v ) { sql::bind( s, v ); } );
+        }
+
+        update_set( query_t q, args_t args )
+            : extend< query_t >( q ), _args( args )
+        {}
+
+        template< typename stream >
+        bool print( stream &s, int &id ) const
+        {
+            bool first = this->_query.print( s, id );
+
+            s << ( first ? " set " : ", " );
+
+            auto fmt_update = [&]( auto col, auto arg ) -> std::string
+            {
+                string_builder b;
+                b << col.get_name( col ) << " = ";
+                sql::print( b, arg, id );
+                return b.buffer();
+            };
+
+            print_list( s, brq::zip( fmt_update, cols_t(), _args ) );
+            return false;
+        }
+
+        template< typename... cols, typename... et > [[nodiscard]]
+        update_set< update_set, cons_list_t< cols... >, cons_list_t< et... > > set( et... e )
+        {
+            return { *this, cons_list_t( e... ) };
+        }
+
+        /* FIXME? this does not make sense after 'on conflict update' */
+        template< typename we_t > [[nodiscard]]
+        where_clause< update_set, we_t > where( const we_t &we ) { return { *this, we }; }
+    };
+
+    template< typename insert >
+    struct insert_update : extend< insert >
+    {
+        using extend< insert >::extend;
+
+        template< typename stream >
+        bool print( stream &s, int &id ) const
+        {
+            this->_query.print( s, id );
+            s << "update ";
+            return true;
+        }
+
+        template< typename... cols, typename... et > [[nodiscard]]
+        update_set< insert_update, cons_list_t< cols... >, cons_list_t< et... > > set( et... e )
+        {
+            return { *this, cons_list_t( e... ) };
+        }
+    };
+
+    template< typename insert, typename... cols >
+    struct conflict_clause : extend< insert >
+    {
+        using extend< insert >::extend;
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            this->_query.print( s, id );
+            s << " on conflict ( ";
+            print_columns( s, cons_list( cols()... ) );
+            s << " ) do ";
+        }
+
+        insert_update< conflict_clause > update() { return { *this }; }
+
+        template< typename... cols_t > [[nodiscard]]
+        update_set< insert_update< conflict_clause >,
+                    cons_list_t< cols_t... >,
+                    cons_list_t< excluded< cols_t > ... > > set()
+        {
+            return { *this, cons_list_t< excluded< cols_t > ... >() };
+        }
+    };
+
+    template< typename insert, typename... vals_t >
+    struct insert_values : extend< insert >
+    {
+        cons_list_t< vals_t... > _vals;
+
+        insert_values( insert i, to_view< const vals_t & >... v )
+            : extend< insert >( i ), _vals( vals_t( v )... )
+        {}
+
+        auto exec() { return this->_exec( this ); }
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            this->_query.print( s, id );
+            s << " values";
+
+            int i = 0;
+            _vals.each( [&]( const auto & ) { s << ( i++ ? ", " : " ( " ) << "$" << id; id ++; } );
+            s << " )";
+        }
+
+        template< typename... ccols > [[nodiscard]]
+        conflict_clause< insert_values, ccols... > on_conflict() { return { *this }; }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            this->_query.bind( s );
+            s.bind_list( _vals );
+        }
+    };
+
+    template< typename insert, typename query_t >
+    struct insert_query : extend< insert >
+    {
+        query_t _subquery;
+
+        insert_query( insert i, query_t q )
+            : extend< insert >( i ), _subquery( std::move( q ) )
+        {}
+
+        auto exec() { return this->_exec( this ); }
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            this->_query.print( s, id );
+
+            s << " ( ";
+            _subquery.print( s, id );
+            s << " )";
+        }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            this->_query.bind( s );
+            _subquery.bind( s );
+        }
+
+        template< typename... cols >
+        conflict_clause< insert_query, cols... > on_conflict() { return { *this }; }
+    };
+
+    template< typename insert, typename... cols_t >
+    struct insert_columns : extend< insert >
+    {
+        using extend< insert >::extend;
+
+        void print( string_builder &s, int &id ) const
+        {
+            this->_query.print( s, id );
+            sql::print_columns( s, cons_list_t< cols_t... >(), "( ", " )" );
+        }
+
+        template< typename... cols > [[nodiscard]]
+        auto values( to_view< const typename cols_t::type & >... v ) const
+        {
+            return insert_values< insert_columns, typename cols_t::type... >( *this, v... );
+        }
+
+        template< typename query_t > [[nodiscard]]
+        auto query( query_t q ) const
+        {
+            return insert_query< insert_columns, query_t >( *this, q );
+        }
+    };
+
+
+    template< typename table >
+    struct insert_output_columns
+    {
+        using primary_l = typename table::columns::template filter_t< is_primary >;
+        static constexpr bool has_primary = !std::is_same_v< primary_l, brq::nil >;
+
+        using list = std::conditional_t< has_primary,
+                                         brq::cons_list_t< typename get_key< primary_l >::type >,
+                                         brq::nil >;
+    };
+
+    template< typename tab_t >
+    struct insert : query_head< typename insert_output_columns< tab_t >::list >
+    {
+        mutable bool _quiet = false;
+        using order_columns = brq::nil;
+        using table = tab_t;
+        using output_columns = insert_output_columns< table >;
+        using super = query_head< typename output_columns::list >;
+        using super::super;
+
+        insert on_conflict_do_nothing() const
+        {
+            auto i = *this;
+            i._quiet = true;
+            return i;
+        }
+
+        void print( string_builder &s, int & ) const
+        {
+            typename insert::table tab;
+            s << "insert into " << tab.declare( tab );
+        }
+
+        void print_tail( string_builder &s, int & ) const
+        {
+            if ( _quiet )
+                s << " on conflict do nothing";
+
+            if constexpr ( output_columns::has_primary )
+            {
+                using primary = unqualify< typename output_columns::primary_l::car_t >;
+                s << " returning " << primary::get_name( primary() );
+            }
+        }
+
+        template< typename... cols >
+        auto columns() const
+        {
+            return insert_columns< insert, cols... >( *this );
+        }
+
+        template< typename... cols > [[nodiscard]]
+        auto values( to_view< const typename cols::type & >... v ) const
+        {
+            return columns< cols... >().values( v... );
+        }
+
+        template< typename query_t > [[nodiscard]]
+        auto query( query_t q ) const
+        {
+            return insert_query< insert, query_t >( *this, q );
+        }
+    };
+
+    template< typename table >
+    struct update : query_head<>
+    {
+        using query_head<>::query_head;
+
+        template< typename stream >
+        bool print( stream &s, int & ) const
+        {
+            s << "update " << table::declare( table() );
+            return true;
+        }
+
+        template< typename... cols_t, typename... args_t > [[nodiscard]]
+        auto set( const args_t &... v ) ->
+            update_set< update, cons_list_t< cols_t... >, cons_list_t< args_t... > >
+        {
+            return { *this, cons_list_t( v... ) };
+        }
+
+        sql::raw_sql< update > raw_sql( std::string_view sv ) { return { *this, sv }; }
+    };
+
+    template< typename table >
+    struct delete_from : query_head<>
+    {
+        using query_head<>::query_head;
+        stmt exec() { return std::move( stmt( this->conn(), *this ).exec() ); }
+
+        template< typename stream >
+        void print( stream &s, int & ) const
+        {
+            s << "delete from " << table::declare( table() );
+        }
+
+        template< typename we_t > [[nodiscard]]
+        where_clause< delete_from, we_t > where( const we_t &we ) { return { *this, we }; }
+    };
+
+    template< typename q_t, typename... qs_t >
+    struct select_union : query_head<>
+    {
+        cons_list_t< q_t, qs_t... > qs;
+        bool all = false;
+
+        select_union( q_t q, qs_t... qs ) : query_head( q.txn() ), qs( q, qs... ) {}
+        select_union( bool a, q_t q, qs_t... qs ) : select_union( q, qs... ) { all = a; }
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            bool first = true;
+            auto one = [&]( const auto &q )
+            {
+                if ( !first ) s << " union " << ( all ? "all " : "" ) << "( ";
+                q.print( s, id );
+                if ( !first ) s << " )";
+                first = false;
+            };
+            qs.each( one );
+        }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            qs.each( [&]( auto &v ) { sql::bind( s, v ); } );
+        }
+
+    };
+}

@@ -38,6 +38,8 @@ namespace brq
         error( std::string err, int exit = 1 )
             : std::runtime_error( err ), _exit( exit )
         {}
+
+        std::string_view message() const { return what(); }
     };
 
     template< typename exc, typename... args_t >
@@ -57,7 +59,8 @@ namespace brq
 
     struct system_error : std::system_error
     {
-        system_error( const char *w ) : std::system_error( errno, std::system_category(), w ) {}
+        system_error( const char *w ) : system_error( errno, w ) {}
+        system_error( int e, const char *w ) : std::system_error( e, std::system_category(), w ) {}
     };
 
     template< typename exc = error, typename... args_t >

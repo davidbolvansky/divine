@@ -19,33 +19,127 @@
  */
 
 #include <divine/smt/builder-z3.hpp>
+
+#include <cmath>
+
 #if OPT_Z3
 namespace divine::smt::builder
 {
 
 using namespace std::literals;
 
+size_t bitwidth( const z3::sort & sort )
+{
+    if ( sort.is_bv() )
+        return sort.bv_size();
+    if ( sort.is_fpa() )
+        return sort.fpa_ebits() + sort.fpa_sbits();
+    ASSERT( sort.is_bool() );
+    return 1; // bool
+}
+
+z3::expr Z3::expr( Z3_ast ast )
+{
+    return z3::expr( _ctx, ast );
+}
+
+z3::sort Z3::fpa_sort( int bw )
+{
+    if ( bw == 32 )
+        return _ctx.fpa_sort< 32 >();
+    if ( bw == 64 )
+        return _ctx.fpa_sort< 64 >();
+    UNREACHABLE( "unsupported fpa sort type of bitwidth ", bw );
+}
+
 z3::expr Z3::constant( bool v )
 {
     return _ctx.bool_val( v );
 }
+
+template< typename T >
+z3::expr Z3::make_fpa_val( T v, int bw )
+{
+    auto sort = fpa_sort( bw );
+    switch( std::fpclassify( v ) )
+    {
+        case FP_INFINITE:
+            return expr( Z3_mk_fpa_inf( _ctx, sort, std::signbit( v ) ) );
+        case FP_NAN:
+            return expr( Z3_mk_fpa_nan( _ctx, sort ) );
+        case FP_ZERO:
+            return expr( Z3_mk_fpa_zero( _ctx, sort, std::signbit( v ) ) );
+        default:
+            return _ctx.fpa_val( v );
+    }
+}
+
+z3::expr Z3::constant( float v )  { return make_fpa_val( v, 32 ); }
+z3::expr Z3::constant( double v ) { return make_fpa_val( v, 64 ); }
 
 z3::expr Z3::constant( uint64_t value, int bw )
 {
     return _ctx.bv_val( value, bw );
 }
 
-z3::expr Z3::variable( int id, int bw )
+z3::expr Z3::variable( int id, brq::smt_op op )
 {
-    return _ctx.bv_const( ( "var_"s + std::to_string( id ) ).c_str(), bw );
+    auto name = "var_"s + std::to_string( id );
+    auto traits = brq::smt_traits( op );
+    if ( traits.is_integral() )
+    {
+        return _ctx.bv_const( name.c_str(), traits.bitwidth );
+    }
+    else if ( traits.is_float() )
+    {
+        if ( traits.bitwidth == 32 )
+            return _ctx.fpa_const( name.c_str(), 8, 24 );
+        if ( traits.bitwidth == 64 )
+            return _ctx.fpa_const( name.c_str(), 11, 53 );
+        UNREACHABLE( "Unsupported floating point bitwidth." );
+    }
+    UNREACHABLE( "Unsupported variable type." );
+}
+
+z3::expr Z3::array( int id, brq::smt_array_type array )
+{
+    auto name = "arr_"s + std::to_string( id );
+    auto idx = _ctx.bv_sort( 32 );
+    auto val = [&] {
+        using array_type = brq::smt_array_type::type_t;
+        switch ( array.type )
+        {
+            case array_type::bitvector:
+                return _ctx.bv_sort( array.bitwidth );
+            case array_type::floating:
+                return fpa_sort( array.bitwidth );
+            case array_type::array:
+                UNREACHABLE( "Unsupported array of arrays." );
+
+        }
+    } ();
+    return _ctx.constant( name.c_str(), _ctx.array_sort( idx, val ) );
+}
+
+z3::expr Z3::load( Node arr, Node off, int /* bw */ )
+{
+    return z3::select( arr, off );
+}
+
+z3::expr Z3::store( Node arr, Node off, Node val, int /* bw */ )
+{
+    return z3::store( arr, off, val );
 }
 
 z3::expr Z3::unary( brq::smt_op op, Node arg, int bw )
 {
     int childbw = arg.is_bv() ? arg.get_sort().bv_size() : 1;
-
-    if ( op == op_t::bv_zfit )
-        op = bw > childbw ? op_t::bv_zext : op_t::bv_trunc;
+    if ( op == op_t::bv_zfit ) {
+        if ( arg.get_sort().is_fpa() )
+            op = bw > childbw ? op_t::fp_ext : op_t::fp_trunc;
+        else
+            op = bw > childbw ? op_t::bv_zext : op_t::bv_trunc;
+    }
 
     switch ( op )
     {
@@ -70,25 +164,42 @@ z3::expr Z3::unary( brq::smt_op op, Node arg, int bw )
                 ? z3::sext( arg, bw - childbw )
                 : z3::ite( arg, ~_ctx.bv_val( 0, bw ), _ctx.bv_val( 0, bw ) );
 
-        /*case op_t::fp_ext:
+        case op_t::fp_ext:
             ASSERT_LT( childbw, bw );
-            // Z3_mk_fpa_to_fp_float( arg.ctx() ); // TODO
-            UNREACHABLE_F( "Unsupported operation." );
+            ASSERT( arg.is_fpa() );
+            if ( bw == childbw )
+                return arg;
+            return expr(
+                Z3_mk_fpa_to_fp_float( _ctx, _ctx.fpa_rounding_mode(), arg, fpa_sort( bw ) )
+            );
         case op_t::fp_trunc:
             ASSERT_LT( bw, childbw );
-            UNREACHABLE_F( "Unsupported operation." ); // TODO
+            ASSERT( arg.is_fpa() );
+            if ( bw == childbw )
+                return arg;
+            return expr(
+                Z3_mk_fpa_to_fp_float( _ctx, _ctx.fpa_rounding_mode(), arg, fpa_sort( bw ) )
+            );
         case op_t::fp_tosbv:
-            UNREACHABLE_F( "Unsupported operation." ); // TODO
             ASSERT_EQ( childbw, bw );
+            return expr(
+                Z3_mk_fpa_to_sbv( _ctx, _ctx.fpa_rounding_mode(), arg, bw )
+            );
         case op_t::fp_toubv:
             ASSERT_EQ( childbw, bw );
-            UNREACHABLE_F( "Unsupported operation." ); // TODO
+            return expr(
+                Z3_mk_fpa_to_ubv( _ctx, _ctx.fpa_rounding_mode(), arg, bw )
+            );
         case op_t::bv_stofp:
             ASSERT_EQ( childbw, bw );
-            UNREACHABLE_F( "Unsupported operation." ); // TODO
+            return expr(
+                Z3_mk_fpa_to_fp_signed( _ctx, _ctx.fpa_rounding_mode(), arg, fpa_sort( bw ) )
+            );
         case op_t::bv_utofp:
             ASSERT_EQ( childbw, bw );
-            UNREACHABLE_F( "Unsupported operation." ); // TODO*/
+            return expr(
+                Z3_mk_fpa_to_fp_unsigned( _ctx, _ctx.fpa_rounding_mode(), arg, fpa_sort( bw ) )
+            );
         case op_t::bv_not:
         case op_t::bool_not:
             ASSERT_EQ( childbw, bw );
@@ -102,11 +213,32 @@ z3::expr Z3::unary( brq::smt_op op, Node arg, int bw )
 z3::expr Z3::extract( Node arg, std::pair< int, int > bounds )
 {
     ASSERT( arg.is_bv() );
-    return arg.extract( bounds.first, bounds.second );
+    return arg.extract( bounds.second, bounds.first );
 }
 
 z3::expr Z3::binary( brq::smt_op op, Node a, Node b, int )
 {
+    if ( smt_traits( op ).is_integral() )
+    {
+        auto bw = bitwidth( a.get_sort() );
+        auto rm = _ctx.fpa_rounding_mode();
+        if ( a.is_fpa() )
+            a = expr( Z3_mk_fpa_to_ubv( _ctx, rm, a, bw ) );
+        if ( b.is_fpa() )
+            b = expr( Z3_mk_fpa_to_ubv( _ctx, rm, b, bw ) );
+    }
+
+    if ( smt_traits( op ).is_float() )
+    {
+        auto sort = fpa_sort( bitwidth( a.get_sort() ) );
+        if ( a.is_bv() )
+            a = expr( Z3_mk_fpa_to_fp_bv( _ctx, a, sort ) );
+        if ( b.is_bv() )
+            b = expr( Z3_mk_fpa_to_fp_bv( _ctx, b, sort ) );
+
+        assert( a.is_fpa() && b.is_fpa() );
+    }
+
     if ( a.is_bv() && b.is_bv() )
     {
         switch ( op )
@@ -141,40 +273,37 @@ z3::expr Z3::binary( brq::smt_op op, Node a, Node b, int )
                 UNREACHABLE( "unknown binary operation", op );
         }
     }
-    /*else if ( a.is_real() && b.is_real() )
+    else if ( a.is_fpa() && b.is_fpa() )
     {
-        switch ( bin.op )
+        switch ( op )
         {
-            case op_t::bv_fpadd: return a + b;
-            case op_t::bv_fpsub: return a - b;
-            case op_t::bv_fpmul: return a * b;
-            case op_t::bv_fpdiv: return a / b;
-            case op_t::bv_fprem:
-                UNREACHABLE_F( "unsupported operation FpFrem" );
-            case op_t::bv_fpfalse:
-                UNREACHABLE_F( "unsupported operation FpFalse" );
-            case op_t::bv_fpoeq: return a == b;
-            case op_t::bv_fpogt: return a > b;
-            case op_t::bv_fpoge: return a >= b;
-            case op_t::bv_fpolt: return a < b;
-            case op_t::bv_fpole: return a <= b;
-            case op_t::bv_fpone: return a != b;
-            case op_t::bv_fpord:
-                UNREACHABLE_F( "unsupported operation FpORD" );
-            case op_t::bv_fpueq: return a == b;
-            case op_t::bv_fpugt: return a > b;
-            case op_t::bv_fpuge: return a >= b;
-            case op_t::bv_fpult: return a < b;
-            case op_t::bv_fpule: return a <= b;
-            case op_t::bv_fpune: return a != b;
-            case op_t::bv_fpuno:
-                UNREACHABLE_F( "unknown binary operation FpUNO" );
-            case op_t::bv_fptrue:
-                UNREACHABLE_F( "unknown binary operation FpTrue" );
+            case op_t::fp_add: return a + b;
+            case op_t::fp_sub: return a - b;
+            case op_t::fp_mul: return a * b;
+            case op_t::fp_div: return a / b;
+            case op_t::fp_rem:
+                UNREACHABLE( "unsupported operation fp_rem" );
+            case op_t::fp_oeq: return expr( Z3_mk_fpa_eq( _ctx, a, b ) );
+            case op_t::fp_ogt: return a > b;
+            case op_t::fp_oge: return expr( Z3_mk_fpa_geq( _ctx, a, b ) );
+            case op_t::fp_olt: return a < b;
+            case op_t::fp_ole: return a <= b;
+            case op_t::fp_one: return a != b;
+            case op_t::fp_ord:
+                UNREACHABLE( "unsupported operation fp_ord" );
+            case op_t::fp_ueq: return expr( Z3_mk_fpa_eq( _ctx, a, b ) );
+            case op_t::fp_ugt: return a > b;
+            case op_t::fp_uge: return expr( Z3_mk_fpa_geq( _ctx, a, b ) );
+;
+            case op_t::fp_ult: return a < b;
+            case op_t::fp_ule: return a <= b;
+            case op_t::fp_une: return a != b;
+            case op_t::fp_uno:
+                UNREACHABLE( "unknown binary operation fp_uno" );
             default:
-                unreachable_f( "unknown binary operation %d %d", bin.op, int( op_t::bv_eq ) );
+                UNREACHABLE( "unknown floating binary operation", op );
         }
-    }*/
+    }
     else
     {
         if ( a.is_bv() )

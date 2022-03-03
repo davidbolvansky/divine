@@ -67,6 +67,8 @@ namespace brq
             f.name = s;
             return {};
         }
+
+        explicit operator bool() const { return !name.empty(); }
     };
 
     /* A file or directory path which may or may not exist. */
@@ -79,6 +81,8 @@ namespace brq
             f.name = s;
             return {};
         }
+
+        explicit operator bool() const { return !name.empty(); }
     };
 
     static parse_result from_string( std::string_view s, cmd_flag &f )
@@ -422,9 +426,9 @@ namespace brq
             _mode = mode_pos_help;
             _pos = 0;
             _pos_help.clear();
-            _help._oom = true;
+            _help._d.oom = true;
             c.options( *this );
-            _help._oom = false;
+            _help._d.oom = false;
 
             if ( synopsis_only )
                 return _help << _argv_0 << " " << cmd_name( c ) << " [options]" << _pos_help.data();

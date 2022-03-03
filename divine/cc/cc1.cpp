@@ -115,7 +115,8 @@ namespace divine::cc
     template< typename CodeGenAction >
     std::unique_ptr< CodeGenAction > CC1::cc1( std::string filename,
                                 FileType type, std::vector< std::string > args,
-                                llvm::IntrusiveRefCntPtr< llvm::vfs::FileSystem > vfs )
+                                llvm::IntrusiveRefCntPtr< llvm::vfs::FileSystem > vfs,
+                                std::string depfile )
     {
         if ( !vfs )
             vfs = overlayFS;
@@ -175,11 +176,14 @@ namespace divine::cc
 
         TRACE( "cc1", cc1a );
         Diagnostics diag;
-        bool succ = clang::CompilerInvocation::CreateFromArgs(*invocation, cc1a,
-                                                              diag.engine);
+        bool succ = clang::CompilerInvocation::CreateFromArgs(*invocation, cc1a, diag.engine);
         if ( !succ )
             throw CompileError( "Failed to create a compiler invocation for " + filename );
-        invocation->getDependencyOutputOpts() = clang::DependencyOutputOptions();
+
+        auto &depopt = invocation->getDependencyOutputOpts() = clang::DependencyOutputOptions();
+        depopt.OutputFile = depfile;
+        depopt.Targets.push_back( "out" );
+        depopt.IncludeSystemHeaders = true;
 
         // actually run the compiler invocation
         clang::CompilerInstance compiler( std::make_shared< clang::PCHContainerOperations >() );
@@ -199,18 +203,19 @@ namespace divine::cc
         return emit;
     }
 
-    std::string  CC1::preprocess( std::string filename,
-                                FileType type, std::vector< std::string > args )
+    std::string CC1::preprocess( std::string filename,
+                                 FileType type, std::vector< std::string > args, std::string depfile )
     {
-        auto prep = cc1< GetPreprocessedAction >( filename, type, args );
+        auto prep = cc1< GetPreprocessedAction >( filename, type, args, nullptr, depfile );
         return prep->output;
     }
 
     std::unique_ptr< llvm::Module > CC1::compile( std::string filename,
-                                FileType type, std::vector< std::string > args )
+                                                  FileType type, std::vector< std::string > args,
+                                                  std::string depfile )
     {
         // EmitLLVMOnlyAction emits module in memory, does not write it into a file
-        auto emit = cc1< clang::EmitLLVMOnlyAction >( filename, type, args );
+        auto emit = cc1< clang::EmitLLVMOnlyAction >( filename, type, args, nullptr, depfile );
         auto mod = emit->takeModule();
         // We want to emit the va_arg instruction when working with ellipsis arguments instead of
         // Clang's default behaviour of emitting architecture-specific instruction sequence

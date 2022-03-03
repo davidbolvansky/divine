@@ -112,7 +112,7 @@ namespace divine::cc
         else
         {
             ld_job.args.insert( ld_job.args.begin(), ld_job.name );
-            auto r = brick::proc::spawnAndWait( brick::proc::CaptureStderr, ld_job.args );
+            auto r = brq::spawn_and_wait( brq::capture_stderr, ld_job.args );
             if ( !r )
                 throw cc::CompileError( "failed to link, ld exited with " + to_string( r ) );
         }
@@ -186,7 +186,7 @@ namespace divine::cc
             if ( srcFile.is< cc::File >() )
             {
                 std::string ifn = srcFile.get< cc::File >().name;
-                std::string ofn = brq::drop_extension( ifn );
+                std::string ofn( brq::drop_extension( ifn ) );
                 ofn = brq::split_filename( ofn ).second;
                 if ( _po.outputFile != "" && _po.toObjectOnly )
                     ofn = _po.outputFile;

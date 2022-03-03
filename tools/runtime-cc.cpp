@@ -9,13 +9,9 @@ DIVINE_UNRELAX_WARNINGS
 #include <brick-string>
 #include <brick-fs>
 #include <brick-llvm>
-#include <brick-sha2>
 #include <iostream>
 
 using namespace divine;
-using namespace brick;
-
-#define VERSION "4" /* bump this to force rebuilds despite .fp matches */
 
 /* usage: runtime-cc srcdir bindir source.c output.bc [flags] */
 int main( int argc, const char **argv )
@@ -28,17 +24,17 @@ int main( int argc, const char **argv )
         std::vector< std::string > opts;
         std::copy( argv + 5, argv + argc, std::back_inserter( opts ) );
 
-        /* Compile only if SHA-2 hash of preprocessed file differs */
-        auto prec = clang.preprocess( argv[3], opts );
-        std::string fpFilename = std::string( argv[ 4 ] ) + ".fp";
-        std::string oldFp = brq::read_file_or( fpFilename, {} );
-        std::string newFp = VERSION ":" + sha2::to_hex( sha2_512( prec ) );
-        if ( oldFp == newFp && brq::file_exists( argv[ 4 ] ) )
-        {
-            brq::touch( argv[ 4 ] );
-            return 0;
-        }
-        auto mod = clang.compile( argv[3], opts );
+        std::string depfile;
+
+        auto end = std::remove_if( opts.begin(), opts.end(),
+                                   []( auto s ) { return brq::starts_with( s, "-M" ); } );
+
+        for ( auto i = end; i != opts.end(); ++i )
+            if ( brq::starts_with( *i, "-MF" ) )
+                depfile = i->substr( 3 );
+
+        opts.erase( end, opts.end() );
+        auto mod = clang.compile( argv[3], opts, depfile );
 
         TRACE( "bindir =", binDir, "srcdir =", srcDir );
         lart::divine::rewriteDebugPaths( *mod, [=]( auto p )
@@ -53,7 +49,6 @@ int main( int argc, const char **argv )
         } );
 
         brick::llvm::writeModule( mod.get(), argv[4] );
-        brq::write_file( fpFilename, newFp );
 
         return 0;
     } catch ( cc::CompileError &err ) {

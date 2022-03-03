@@ -721,7 +721,7 @@ struct LinkerTest {
         declareFun( *ma, "foo" );
         declareFun( *mb, "bar" );
 
-        auto name = brq::join_path( dir, "test.a" );
+        auto name = brq::join_path( dir.path, "test.a" );
         auto il = { std::move( ma ), std::move( mb ) };
         writeArchive( il.begin(), il.end(), name );
 

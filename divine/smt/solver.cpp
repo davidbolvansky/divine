@@ -9,7 +9,6 @@ using namespace divine::smt::builder;
 namespace divine::smt::solver
 {
 
-namespace proc = brick::proc;
 using op_t = brq::smt_op;
 
 Result SMTLib::solve()
@@ -20,8 +19,8 @@ Result SMTLib::solve()
     for ( auto clause : _asserts )
         q = builder::mk_bin( b, brq::smt_op::bv_and, 1, q, clause );
 
-    auto r = brick::proc::spawnAndWait( proc::StdinString( _ctx.query( q ) ) | proc::CaptureStdout |
-                                        proc::CaptureStderr, _opts );
+    auto r = brq::spawn_and_wait( brq::stdin_string( _ctx.query( q ) ) | brq::capture_stdout |
+                                  brq::capture_stderr, _opts );
 
     std::string_view result = r.out();
     if ( result.substr( 0, 5 ) == "unsat" )
@@ -40,9 +39,11 @@ Result SMTLib::solve()
 template< typename Core, typename Node >
 op_t equality( const Node& node ) noexcept
 {
+#if OPT_STP
     if constexpr ( std::is_same_v< Core, STP > )
         return op_t::eq;
     else
+#endif
         return node.is_bv() || node.is_bool() ? op_t::eq : op_t::fp_oeq;
 }
 
@@ -96,6 +97,18 @@ bool Simple< Core >::feasible( vm::CowHeap & heap, vm::HeapPointer ptr )
     auto query = evaluate( e, e.read( ptr ) );
     this->add( mk_bin( b, op_t::eq, 1, query, b.constant( 1, 1 ) ) );
     return this->solve() != Result::False;
+}
+
+template< typename Core >
+Model Simple< Core >::model( vm::CowHeap &heap, vm::HeapPointer path )
+{
+    this->reset();
+    auto e = this->extract( heap, 1 );
+    auto b = this->builder();
+    auto rpn = e.read_constraints( path );
+    auto constraints = rpn.empty() ? b.constant( true ) : evaluate( e, rpn );
+    this->add( mk_bin( b, op_t::eq, 1, constraints, b.constant( 1, 1 ) ) );
+    return Core::model();
 }
 
 template< typename Core >
@@ -160,6 +173,34 @@ bool Incremental< Core >::feasible( vm::CowHeap &/*heap*/, vm::HeapPointer /*ptr
     #endif
 }
 
+#if OPT_Z3
+
+Model Z3::model()
+{
+    Model model;
+
+    _solver.check();
+    auto z3_model = _solver.get_model();
+
+    for ( unsigned int i = 0; i < z3_model.size(); ++i )
+    {
+        auto val = z3_model.get_const_interp( z3_model[i] );
+        auto var = z3_model[i].name().str();
+        if ( val.is_bv() ) {
+            model[var] = val.get_numeral_uint64();
+        } else if ( val.is_fpa() ) {
+            // TODO parse string to double
+            model[var] =  Z3_get_numeral_string( _ctx, val );
+        } else {
+            UNREACHABLE( "unknown sort" );
+        }
+    }
+    return model;
+}
+
+#endif
+
+
 #if OPT_STP
 
 void STP::pop()
@@ -202,6 +243,38 @@ void STP::clear()
 {
     _mgr.ClearAllTables();
     _stp.ClearAllTables();
+}
+
+Model STP::model()
+{
+    Model model;
+
+    auto get_value = [&] ( auto node ) -> uint64_t {
+        auto type = node.GetType();
+        if ( type == stp::BITVECTOR_TYPE )
+        {
+            auto val = _ce.GetCounterExample( node );
+            assert(val.isConstant());
+
+            auto bv = val.GetBVConst();
+            return std::atoi( reinterpret_cast< char * >( CONSTANTBV::BitVector_to_Dec( bv ) ) );
+        }
+
+        UNREACHABLE( "unknown smt type" );
+    };
+
+    if ( solve() == Result::True )
+    {
+        auto map = _ce.GetCompleteCounterExample();
+        for ( const auto &[term, repr] : map )
+        {
+            if ( _mgr.FoundIntroducedSymbolSet( term ) )
+                continue; // skip introduced symbols
+            if ( term.GetKind() == stp::SYMBOL )
+                model[ term.GetName() ] = get_value(repr);
+        }
+    }
+    return model;
 }
 
 #endif

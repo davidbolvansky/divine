@@ -20,6 +20,7 @@
 #include "brick-trace"
 #include <string_view>
 #include <vector>
+#include <map>
 #include <string>
 #include <expat.h>
 
@@ -76,7 +77,7 @@ namespace brq
 
     struct xml_stack : xml_parser
     {
-        using attrs = std::vector< std::string >;
+        using attrs = std::map< std::string, std::string >;
         using tag   = std::pair< std::string, attrs >;
         std::vector< tag > _stack;
         std::vector< std::string > _text;
@@ -95,7 +96,12 @@ namespace brq
         virtual void start( std::string_view n, std::vector< std::string_view > attr )
         {
             TRACE( "open", std::string( _stack.size() * 2, ' ' ), n, attr );
-            _stack.emplace_back( n, attrs( attr.begin(), attr.end() ) );
+            attrs a;
+
+            for ( auto i = attr.begin(); i != attr.end(); std::advance( i, 2 ) )
+                a.emplace( i[ 0 ], i[ 1 ] );
+
+            _stack.emplace_back( n, a );
             _text.emplace_back();
         }
 

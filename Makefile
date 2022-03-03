@@ -132,7 +132,6 @@ $(TOOLSTAMP):
 	$(CMAKE) --build $(OBJ)toolchain --target cxxabi_static -- $(EXTRA)
 	$(CMAKE) --build $(OBJ)toolchain --target cxx_static -- $(EXTRA)
 	$(CMAKE) --build $(OBJ)toolchain --target cxx -- $(EXTRA)
-	$(CMAKE) --build $(OBJ)toolchain --target clang -- $(EXTRA)
 	mkdir -p $(CXX_STATIC)
 	ln -sf $(CXX_LDIR)/libc++{,abi}.a $(CXX_STATIC)/
 	touch $@

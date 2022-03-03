@@ -37,12 +37,12 @@ namespace divine::cc
                               brq::UseSystemTemp::Yes );
 
         // Dump the section data into a temporary file, so that objcopy can load them
-        auto secpath = brq::join_path( workdir, "sec" );
+        auto secpath = brq::join_path( workdir.path, "sec" );
         std::ofstream secf( secpath, std::ios_base::out | std::ios_base::binary );
         secf << section_data;
         secf.close();
 
-        auto r = brick::proc::spawnAndWait( brick::proc::CaptureStderr, "objcopy",
+        auto r = brq::spawn_and_wait( brq::capture_stderr, "objcopy",
                                     "--remove-section", section_name, // objcopy can't override section
                                     "--add-section", section_name + "=" +  secpath,
                                     "--set-section-flags", section_name + "=noload,readonly",

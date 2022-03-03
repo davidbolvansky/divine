@@ -48,7 +48,7 @@
  * in production code, just like ASSERT macros allow for sanity checks and
  * pre/post-condition checking. If compiled with NDEBUG, it's a noop and in
  * debug builds, the output must be enabled by setting environment variables
- * BRICK_TRACE and optionally BRICK_NOTRACE, which accept either `all`, a file
+ * TRACE and optionally BRICK_NOTRACE, which accept either `all`, a file
  * name (without path) or a file name and a line number (formatted like
  * `file.cpp:15`). A runtime-disabled trace point compiles to a few lookups in
  * std::unordered_set.
@@ -67,11 +67,12 @@
 #define TRACE(...) static_cast< decltype(__VA_ARGS__, void(0)) >(0)
 #define NOISE(...) static_cast< decltype(__VA_ARGS__, void(0)) >(0)
 #else
-#define TRACE(...) ::brq::trace_fn< true >( 3, BRICK_LOCATION( "" ), __VA_ARGS__ )
-#define NOISE(...) ::brq::trace_fn< true >( 4, BRICK_LOCATION( "" ), __VA_ARGS__ )
+#define TRACE(...) ::brq::trace_fn< true >( 4, BRICK_LOCATION( "" ), __VA_ARGS__ )
+#define NOISE(...) ::brq::trace_fn< true >( 5, BRICK_LOCATION( "" ), __VA_ARGS__ )
 #endif
-#define DEBUG(...) ::brq::trace_fn< false >( 2, BRICK_LOCATION( "" ), __VA_ARGS__ )
-#define INFO(...)  ::brq::trace_fn< false >( 1, BRICK_LOCATION( "" ), __VA_ARGS__ )
+#define DEBUG(...) ::brq::trace_fn< false >( 3, BRICK_LOCATION( "" ), __VA_ARGS__ )
+#define INFO(...)  ::brq::trace_fn< false >( 2, BRICK_LOCATION( "" ), __VA_ARGS__ )
+#define WARN(...)  ::brq::trace_fn< false >( 1, BRICK_LOCATION( "" ), __VA_ARGS__ )
 #define ERROR(...) ::brq::trace_fn< false >( 0, BRICK_LOCATION( "" ), __VA_ARGS__ )
 
 namespace brq
@@ -107,7 +108,7 @@ namespace brq
     /* In debug builds, decide which traces are active at run-time. This is to
      * prevent swamping the user with irrelevant traces from library code they
      * might be using. For short programs (e.g. unit tests), it might be okay
-     * to just say `env BRICK_TRACE=all program`. */
+     * to just say `env TRACE=+ program`. */
 
     template< typename T >
     [[gnu::destructor]] void singleton_destroy( T *x ) noexcept( std::is_nothrow_destructible_v< T > )
@@ -157,8 +158,15 @@ namespace brq
 #endif
         rules_t _rules;
         bool _print_tid = false, _print_location = false, _use_syslog = false;
+        string_builder _syslog_meta;
 
-        void use_syslog( bool s = true ) { _use_syslog = s; }
+        void use_syslog( bool s = true, std::string_view meta = "" )
+        {
+            _use_syslog = s;
+            _syslog_meta.clear();
+            if ( !meta.empty() )
+                _syslog_meta << meta << " ";
+        }
 
         trace() noexcept( nothrow )
         {
@@ -168,11 +176,11 @@ namespace brq
                 _print_location = true;
             }
             else
-                add_rule( "+", 0, 0 ); /* print info-level messages by default */
+                add_rule( "+", 2, 0 ); /* print info-level messages by default */
         }
 
-        static constexpr std::array< const char *, 5 > levels =
-            { "error", "info", "debug", "trace", "noise" };
+        static constexpr std::array< const char *, 6 > levels =
+            { "error", "warning", "info", "debug", "trace", "noise" };
 
         static std::string_view level( int i ) noexcept { return levels[ i ]; }
 
@@ -257,7 +265,7 @@ namespace brq
             b << "\n";
 #ifdef __unix__
             if ( _use_syslog )
-                ::syslog( level > 0 ? LOG_DEBUG : LOG_INFO, "%s", b.buffer() );
+                ::syslog( level > 0 ? LOG_DEBUG : LOG_INFO, "%s%s", _syslog_meta.buffer(), b.buffer() );
             else
                 ::write( 2, b.buffer(), b.size() );
 #else

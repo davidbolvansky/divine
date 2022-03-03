@@ -290,7 +290,7 @@ struct TGBA1
                 return output.str();
             }
         }
-        UNREACHABLE( "literal", wanted, "not found in", allTrivialLiterals );
+        UNREACHABLE( "literal", wanted, "not found" );
     }
 
     friend std::ostream& operator<<( std::ostream & os, const TGBA1& tgba ) {
@@ -394,7 +394,7 @@ static inline std::pair< bool, size_t > indexOfLiteral( LTLPtr literal, const st
         if ( "!" + literals.at( i )->string() == wanted )
             return std::make_pair( false, i );
     }
-    UNREACHABLE( "literal", wanted, "not found in", literals );
+    UNREACHABLE( "literal", wanted, "not found" );
     return std::make_pair( true, 0 );
 }
 

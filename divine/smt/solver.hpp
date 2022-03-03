@@ -22,6 +22,7 @@
 #include <divine/vm/types.hpp>
 #include <divine/smt/builder.hpp>
 #include <divine/smt/extract.hpp>
+#include <divine/smt/model.hpp>
 #include <vector>
 #include <brick-except>
 #include <brick-timer>
@@ -65,6 +66,13 @@ struct None
     }
 
     void reset() {}
+
+    Model model( vm::CowHeap &, vm::HeapPointer )
+    {
+        brq::raise() << "Cannot obtain a model without a solver.\n"
+                     << "Did you mean to use --symbolic?";
+        return Model{};
+    }
 };
 
 template< typename Core >
@@ -73,6 +81,8 @@ struct Simple : Core
     using Core::Core;
     bool equal( vm::HeapPointer path, SymPairs &sym_pairs, vm::CowHeap &h1, vm::CowHeap &h2 );
     bool feasible( vm::CowHeap & heap, vm::HeapPointer assumes );
+
+    Model model( vm::CowHeap & heap, vm::HeapPointer path );
 };
 
 template< typename Core >
@@ -121,6 +131,8 @@ struct SMTLib
         return extract::SMTLib2( h, _ctx, "_"s + char( 'a' + id ) );
     }
 
+    auto model() { return Model{}; }
+
     std::vector< brq::smtlib_node > _asserts;
     brq::smtlib_context _ctx;
     Options _opts;
@@ -134,6 +146,7 @@ struct STP
             _ts( &_mgr, &_at ), _ce( &_mgr, &_simp, &_at ),
             _stp( &_mgr, &_simp, &_at, &_ts, &_ce )
     {
+        _mgr.UserFlags.check_counterexample_flag = true;
         reset();
     }
 
@@ -148,6 +161,8 @@ struct STP
     Result solve();
     builder::STP builder( int = 0 ) { return builder::STP( _mgr ); }
     extract::STP extract( vm::CowHeap &h, int = 0 ) { return extract::STP( h, _mgr ); }
+
+    Model model();
 
     stp::STPMgr _mgr;
     stp::Simplifier _simp;
@@ -183,6 +198,9 @@ struct Z3
     void push()            { _solver.push();  }
     void pop()             { _solver.pop();   }
     void reset()           { _solver.reset(); }
+
+    Model model();
+
 private:
     z3::context _ctx;
     z3::solver _solver;

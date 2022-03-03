@@ -1,0 +1,557 @@
+// -*- mode: C++; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+
+/*
+ * Copyright (C) 2019 Petr Rockai <code@fixp.eu>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+#pragma once
+#include "brick-assert"
+#include "brick-string"
+#include "brick-except"
+#include <stdexcept>
+
+namespace brq
+{
+    struct json_error : std::runtime_error
+    {
+        using std::runtime_error::runtime_error;
+    };
+
+    template< typename T > struct any { using type = T; };
+    template< typename T > struct is_any : std::false_type {};
+    template< typename T > struct is_any< any< T > > : std::true_type {};
+    template< typename T > constexpr bool is_any_v = is_any< T >::value;
+
+    struct json_listener
+    {
+        template< typename F >
+        void decode_escape( string_builder &b, F fetch )
+        {
+            auto unhex = [&]( int shift )
+            {
+                char32_t v = fetch();
+
+                if      ( v >= '0' && v <= '9' ) v = v - '0';
+                else if ( v >= 'a' && v <= 'f' ) v = v - 'a' + 10;
+                else if ( v >= 'A' && v <= 'F' ) v = v - 'A' + 10;
+                else raise< json_error >() << "invalid character '" << rawchr32( v )
+                                           << "' in a \\u-sequence";
+
+                return v << shift;
+            };
+
+            char c = fetch();
+
+            switch ( c )
+            {
+                case 'b': b << "\b"; break;
+                case 'n': b << "\n"; break;
+                case 'r': b << "\r"; break;
+                case 't': b << "\t"; break;
+                case 'f': b << "\f"; break;
+                case 'u':
+                {
+                    char32_t ch = 0;
+                    ch |= unhex( 12 );
+                    ch |= unhex( 8 );
+                    ch |= unhex( 4 );
+                    ch |= unhex( 0 );
+                    b << rawchr32( ch );
+                    break;
+                }
+
+                default: b << rawchr( c );
+            }
+        }
+
+        std::string decode( std::vector< std::string_view > v )
+        {
+            int i = 0, j = 0;
+            brq::string_builder b;
+
+            auto fetch = [&]
+            {
+                if ( j < v[ i ].size() )
+                    return v[ i ][ j++ ];
+                while ( ++i < v.size() )
+                    if ( v[ i ].size() )
+                        return j = 0, v[ i ][ j++ ];
+                return char( 0 );
+            };
+
+            while ( char c = fetch() )
+                if ( c == '\\' )
+                    decode_escape( b, fetch );
+                else
+                    b << rawchr( c );
+
+            return std::string( b.data() );
+        }
+
+        int64_t decode_int( std::vector< std::string_view > v ) { return std::stoi( decode( v ) ); }
+        double decode_float( std::vector< std::string_view > v ) { return std::stod( decode( v ) ); }
+
+        virtual void object_start() {}
+        virtual void object_item( std::vector< std::string_view > key ) { object_item( decode( key ) ); }
+        virtual void object_item( std::string ) {}
+        virtual void object_end() {}
+
+        virtual void array_start() {}
+        virtual void array_item() {}
+        virtual void array_end() {}
+
+        using value_var_t = std::variant< bool, int64_t, double, std::string >;
+
+        struct value_t : value_var_t
+        {
+            using value_var_t::value_var_t;
+            bool        b() const { return std::get< bool >( *this ); }
+            int64_t     i() const { return std::get< int64_t >( *this ); }
+            double      f() const { return std::get< double >( *this ); }
+            std::string s() const { return std::get< std::string >( *this ); }
+        };
+
+        virtual void value( value_t ) {}
+        virtual void boolean( bool b ) { value( b ); }
+        virtual void null() {}
+        virtual void string( std::vector< std::string_view > v ) { string( decode( v ) ); }
+        virtual void string( std::string s ) { value( s ); }
+        virtual void number( int64_t i ) { value( i ); }
+        virtual void number( double f ) { value( f ); }
+        virtual void number( bool integer, std::vector< std::string_view > v )
+        {
+            if ( integer )
+                number( decode_int( v ) );
+            else
+                number( decode_float( v ) );
+        }
+
+        virtual ~json_listener() = default;
+    };
+
+    struct json_parser
+    {
+        json_listener &_l;
+
+        std::vector< bool > _stack;
+        std::string_view _chunk;
+        std::vector< std::string_view > _splice;
+
+        bool _backslash = false;
+        bool _integer = true;
+        enum state_t { read_value, read_comma_or_name, read_comma_or_value,
+                       read_name, read_name_str, read_colon, read_comma,
+                       read_bareword, read_string, read_number, read_digits, read_digits_tail,
+                       read_decimal, read_exponent, read_exponent_digits } _state = read_value;
+
+        template< typename stream >
+        friend auto operator<<( stream &out, state_t s ) -> decltype( out << "" )
+        {
+            switch ( s )
+            {
+                case read_value: return out << "read_value";
+                case read_name: return out << "read_name";
+                case read_name_str: return out << "read_name_str";
+                case read_colon: return out << "read_colon";
+                case read_comma: return out << "read_comma";
+                case read_comma_or_name: return out << "read_comma_or_name";
+                case read_comma_or_value: return out << "read_comma_or_value";
+                case read_bareword: return out << "read_bareword";
+                case read_string: return out << "read_string";
+                case read_number: return out << "read_number";
+                case read_digits: return out << "read_digits";
+                case read_digits_tail: return out << "read_digits_tail";
+                case read_decimal: return out << "read_decimal";
+                case read_exponent: return out << "read_exponent";
+                case read_exponent_digits: return out << "read_exponent_digits";
+            }
+        }
+
+        void chunk( std::string_view c )
+        {
+            ASSERT( _chunk.empty() );
+            _chunk = c;
+
+            switch ( _state )
+            {
+                case read_digits:
+                case read_digits_tail:
+                case read_decimal:
+                case read_exponent:
+                case read_exponent_digits:
+                case read_number:         number(); break;
+                case read_string:         string(); break;
+
+                case read_colon:
+                case read_name_str:
+                case read_name:           name( false ); break;
+                case read_comma:          comma(); break;
+                case read_comma_or_name:  comma_or_name(); break;
+                case read_comma_or_value: comma_or_value(); break;
+                case read_value:          value(); break;
+                case read_bareword:       bareword(); break;
+            }
+
+            if ( !_stack.empty() && !_chunk.empty() )
+                comma();
+        }
+
+        json_parser( json_listener &l ) : _l( l ) {}
+
+        bool next_state( state_t s, bool do_chomp ) /* return true if we have a character to work on */
+        {
+            TRACE( "→", s );
+            if ( do_chomp )
+                chomp( 0 );
+            _state = s;
+            return !_chunk.empty();
+        }
+
+        char next() { return _chunk[ 0 ]; }
+        void chomp( int count = 1 )
+        {
+            _chunk.remove_prefix( count );
+            while ( _chunk.size() && ( std::isblank( next() ) || next() == '\n' ) )
+                _chunk.remove_prefix( 1 );
+        }
+
+        std::vector< std::string_view > splice( int i, int cut = 0 )
+        {
+            auto rv = std::move( _splice );
+            rv.push_back( _chunk.substr( 0, i ) );
+            _chunk.remove_prefix( i + cut );
+            TRACE( "splice", rv );
+            return rv;
+        }
+
+        std::vector< std::string_view > scan_string()
+        {
+            for ( int i = 0; i < _chunk.size(); ++i )
+            {
+                if ( !_backslash && _chunk[ i ] == '"' ) /* end of string */
+                    return splice( i, 1 );
+
+                if ( !_backslash && _chunk[ i ] == '\\' )
+                    _backslash = true;
+                else
+                    _backslash = false;
+            }
+
+            _splice.push_back( _chunk );
+            _chunk = "";
+            return {};
+        }
+
+        void string()
+        {
+            if ( !next_state( read_string, false ) )
+                return;
+
+            if ( auto v = scan_string(); !v.empty() )
+            {
+                _l.string( v );
+
+                if ( !_stack.empty() )
+                    comma();
+            }
+        }
+
+        std::vector< std::string_view > scan_number()
+        {
+            for ( int i = 0; i < _chunk.size(); ++i )
+            {
+                switch( _state )
+                {
+                    case read_number:
+                        if ( _chunk[ i ] == '-' )
+                            next_state( read_digits, false );
+                        else if ( _chunk[ i ] == '0' )
+                            next_state( read_digits_tail, false ); /* FIXME lenient */
+                        else if ( std::isdigit( _chunk[ i ] ) )
+                            next_state( read_digits_tail, false );
+                        else
+                            brq::raise< json_error >() << "expected - or a digit";
+                        _integer = true;
+                        continue;
+
+                    case read_digits:
+                        TRACE( "read_digits", _chunk[ i ] );
+                        if ( _chunk[ i ] == '0' )
+                            next_state( read_decimal, false );
+                        else if ( std::isdigit( _chunk[ i ] ) )
+                            next_state( read_digits_tail, false );
+                        else
+                            brq::raise< json_error >() << "expected a digit";
+                        continue;
+
+                    case read_digits_tail:
+                        if ( std::isdigit( _chunk[ i ] ) )
+                            ; /* keep reading more digits */
+                        else if ( _chunk[ i ] == '.' )
+                            next_state( read_decimal, false );
+                        else if ( _chunk[ i ] == 'e' || _chunk[ i ] == 'E' )
+                            next_state( read_exponent, false );
+                        else
+                            return splice( i );
+                        continue;
+
+                    case read_decimal:
+                        _integer = false;
+                        if ( std::isdigit( _chunk[ i ] ) )
+                            ; /* keep reading digits */
+                        else if ( _chunk[ i ] == 'e' || _chunk[ i ] == 'E' )
+                            next_state( read_exponent, false );
+                        else
+                            return splice( i );
+                        continue;
+
+                    case read_exponent:
+                        _integer = false;
+                        if ( _chunk[ i ] == '+' || _chunk[ i ] == '-' )
+                        {
+                            next_state( read_exponent_digits, false );
+                            continue;
+                        }
+
+                    case read_exponent_digits:
+                        if ( std::isdigit( _chunk[ i ] ) )
+                            ; /* keep reading digits */
+                        else
+                            return splice( i ); /* end of the number */
+                        continue;
+
+                    default:
+                        __builtin_unreachable();
+                }
+            }
+
+            _splice.push_back( _chunk );
+            _chunk = "";
+            return {}; /* incomplete number */
+        }
+
+        void number()
+        {
+            if ( auto v = scan_number(); !v.empty() )
+            {
+                _l.number( _integer, v );
+                if ( !_stack.empty() )
+                    comma();
+            }
+        }
+
+        void name( bool set )
+        {
+            if ( set )
+                _state = read_name;
+
+            switch ( _state )
+            {
+                case read_name:
+                    if ( !next_state( read_name, true ) )
+                        return;
+
+                    if ( next() != '"' )
+                        raise< json_error >() << "expected \" (name)";
+
+                    _chunk.remove_prefix( 1 );
+
+                case read_name_str:
+                    if ( !next_state( read_name_str, false ) )
+                        return;
+
+                    if ( auto v = scan_string(); !v.empty() )
+                        _l.object_item( v );
+                    else
+                        return;
+
+                case read_colon:
+                    if ( !next_state( read_colon, true ) )
+                        return;
+
+                    if ( next() != ':' )
+                        raise< json_error >() << "expected :";
+
+                    chomp();
+                    value();
+                    break;
+
+                default:
+                    __builtin_unreachable();
+            }
+        }
+
+        void pop( bool v )
+        {
+            ASSERT( !_stack.empty() );
+            if ( _stack.back() != v )
+                raise< json_error >() << "mismatched ] vs }";
+            _stack.pop_back();
+            chomp();
+        }
+
+        void comma()
+        {
+            if ( !next_state( read_comma, true ) )
+                return;
+
+            switch ( next() )
+            {
+                case '}': pop( true );  _l.object_end(); return comma();
+                case ']': pop( false ); _l.array_end();  return comma();
+                case ',': chomp(); break;
+                default:  raise< json_error >() << "expected , or }";
+            }
+
+            if ( _stack.empty() )
+                return;
+
+            if ( _stack.back() )
+                return name( true );
+            else
+                return value();
+        }
+
+        void comma_or_name()
+        {
+            if ( !next_state( read_comma_or_name, false ) )
+                return;
+
+            if ( next() == '}' )
+                comma();
+            else
+                name( true );
+        }
+
+        void comma_or_value()
+        {
+            if ( !next_state( read_comma_or_value, false ) )
+                return;
+
+            if ( next() == ']' )
+                comma();
+            else
+                value();
+        }
+
+        void bareword()
+        {
+            next_state( read_bareword, false );
+
+            for ( int i = 0; i < _chunk.size(); ++i )
+            {
+                if ( !std::isalpha( _chunk[ i ] ) )
+                {
+                    auto w = _l.decode( splice( i ) );
+                    if      ( w == "true" ) _l.boolean( true );
+                    else if ( w == "false" ) _l.boolean( false );
+                    else if ( w == "null" ) _l.null();
+                    else raise< json_error >() << "unexpected bareword " << w;
+
+                    if ( !_stack.empty() )
+                        comma();
+                }
+            }
+
+            _splice.push_back( _chunk );
+            _chunk = "";
+        }
+
+        void value()
+        {
+            if ( !next_state( read_value, true ) )
+                return;
+
+            switch ( next() )
+            {
+                case '{':
+                    chomp();
+                    _stack.push_back( true );
+                    _l.object_start();
+                    comma_or_name();
+                    break;
+                case '[':
+                    chomp();
+                    _stack.push_back( false );
+                    _l.array_start();
+                    comma_or_value();
+                    break;
+                case '"':
+                    _chunk.remove_prefix( 1 );
+                    string();
+                    break;
+                case 'f': case 't': case 'n':
+                    bareword();
+                    break;
+                default:
+                    if ( std::isdigit( next() ) || next() == '-' )
+                    {
+                        next_state( read_number, false );
+                        number();
+                    }
+                    else
+                        raise< json_error >() << "unexpected character " << next();
+            }
+
+            if ( !_stack.empty() && !_chunk.empty() )
+                comma();
+        }
+    };
+
+    struct json_stack : json_listener
+    {
+        using any_index_t = any< int >;
+        using any_key_t = any< std::string >;
+
+        constexpr static const any_key_t any_key{};
+        constexpr static const any_index_t any_index{};
+
+        using item_t = std::variant< int, std::string >;
+        std::vector< item_t > _stack;
+
+        virtual void close() {}
+
+        void object_start() override { _stack.push_back( "" ); }
+        void object_end()   override { _stack.pop_back(); close(); }
+        void array_start()  override { _stack.push_back( -1 ); }
+        void array_end()    override { _stack.pop_back(); close(); }
+
+        void object_item( std::string k ) override { _stack.back() = k; }
+        void array_item() override { std::get< int >( _stack.back() ) += 1; }
+
+        std::string top_key() const { return std::get< std::string >( _stack.back() ); }
+        int top_index() const { return std::get< int >( _stack.back() ); }
+
+        bool in_context() { return true; }
+
+        template< typename arg_t, typename... args_t >
+        bool in_context( arg_t arg, args_t... args )
+        {
+            if ( _stack.size() <= sizeof...( args ) )
+                return false;
+
+            bool match = true;
+            auto &item = _stack.rbegin()[ sizeof...( args ) ];
+
+            TRACE( "in_context", arg, item );
+            if constexpr ( is_any_v< arg_t > )
+                match = std::holds_alternative< typename arg_t::type >( item );
+            else
+                match = item == item_t( arg );
+
+            return match && in_context( args... );
+        }
+    };
+}

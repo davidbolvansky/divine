@@ -108,7 +108,7 @@ std::string change_path_prefix( const std::string& path, const std::string& oldP
     auto o = brq::split_path( oldPref );
     if ( !o.empty() && o.back().empty() )
         o.pop_back();
-    std::vector< std::string > result{ newPref };
+    std::vector< std::string_view > result{ newPref };
     std::copy( p.begin() + o.size(), p.end(), std::back_inserter( result ) );
     return brq::normalize_path( brq::join_path( result ) );
 }
@@ -403,7 +403,7 @@ void cc::run()
                 continue;
             auto f = file.get< cc_ns::File >();
             auto m = _driver.compile( f.name, f.type, po.opts );
-            _driver.writeToFile( outputName( f.name, "bc" ), m.get() );
+            _driver.writeToFile( _output.empty() ? outputName( f.name, "bc" ) : _output, m.get() );
         }
     }
     else

@@ -50,7 +50,15 @@ struct STP
     Node constant( uint64_t value, int bw );
     Node constant( int val );
     Node constant( bool );
-    Node variable( int id, int bw );
+
+    Node constant( float );
+    Node constant( double );
+
+    Node variable( int id, brq::smt_op op );
+    Node array( int id, brq::smt_array_type array_type );
+
+    Node load( Node array, Node offset, int bw );
+    Node store( Node array, Node offset, Node value, int bw );
 
     stp::STPMgr &_stp;
 };

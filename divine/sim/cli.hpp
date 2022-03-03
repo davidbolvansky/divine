@@ -103,12 +103,12 @@ struct CLI
     static bool *_sigint;
 
     std::map< std::string, cmd_tokens > _info_cmd;
-    std::map< std::string, brick::proc::XTerm > _xterms;
+    std::map< std::string, brq::xterm > _xterms;
     std::ostream *_stream = &std::cerr;
     std::ostream &out() { return *_stream; }
     int out_fd = 2;
 
-    void out( std::ostream &stream, int fd ) { _stream = &stream; out_fd = fd; }
+    void out( std::ostream &stream, int fd = -1 ) { _stream = &stream; out_fd = fd; }
 
     void command( cmd_tokens cmd );
     void command_raw( cmd_tokens cmd );

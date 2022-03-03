@@ -1,0 +1,469 @@
+// -*- mode: C++; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+
+/*
+ * Copyright (C) 2019 Petr Rockai <code@fixp.eu>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+#pragma once
+#include "brick-assert"
+#include "brick-sql-util"
+
+namespace brq::sql
+{
+    struct unknown_type {};
+    struct aggregate_type {};
+    struct expression_type {};
+
+    struct opaque_base
+    {
+        virtual void print( brq::string_builder &b, int &id ) const = 0;
+        virtual void bind( stmt_base &b ) const = 0;
+        virtual ~opaque_base() = default;
+    };
+
+    using opaque_ptr = std::shared_ptr< opaque_base >;
+
+    template< typename query_t >
+    struct opaque : opaque_base
+    {
+        query_t _query;
+        opaque( query_t q ) : _query( std::move( q ) ) {}
+
+        void print( brq::string_builder &b, int &id ) const override { _query.print( b, id ); }
+        void bind( stmt_base &b ) const override { _query.bind( b ); }
+    };
+
+    struct opaque_vec : category_flags
+    {
+        static const constexpr bool is_query = true;
+        static const constexpr bool is_expr  = true;
+
+        std::vector< opaque_ptr > _vec;
+        opaque_vec( std::vector< opaque_ptr > &&vec ) : _vec( std::move( vec ) ) {}
+        opaque_vec() = default;
+
+        void append( opaque_ptr p )
+        {
+            _vec.push_back( std::move( p ) );
+        }
+
+        template< typename query_t > void append( query_t q )
+        {
+            _vec.emplace_back( new opaque( q ) );
+        }
+
+        void print_tail( string_builder &, int & ) const {}
+
+        void print( string_builder &b, int &id, const char *join, const char *empty ) const
+        {
+            int i = 0;
+
+            for ( const auto &o : _vec )
+            {
+                if ( i++ ) b << " " << join << " ";
+                o->print( b, id );
+            }
+
+            if ( _vec.empty() )
+                b << empty;
+        }
+
+        template< typename stmt > void bind( stmt &s ) const
+        {
+            for ( const auto &o : _vec )
+                o->bind( s );
+        }
+    };
+
+    template< typename tab, typename col >
+    struct in_table : col
+    {
+        using bare = col;
+        using qualifier = tab;
+        static constexpr bool is_qualified = true;
+
+        template< typename CT >
+        static std::string_view get_name( const CT & )
+        {
+            static auto name = "\""  + std::string( tab::get_name( tab() ) ) +
+                               "\"." + std::string( col::get_name( col() ) );
+            return name;
+        }
+    };
+
+    template< typename from, typename to >
+    struct rename : to
+    {
+        static_assert( std::is_same_v< typename from::columns, typename to::columns > );
+
+        template< typename self_t >
+        static std::string_view declare( const self_t & )
+        {
+            static std::string name( format( "\"", from::get_name( from() ), "\" as \"",
+                                             to::get_name( to() ), "\"" ).data() );
+            return name;
+        }
+    };
+
+    template< typename... cols >
+    struct tuple
+    {
+        static constexpr bool is_column = false;
+        static constexpr bool is_enum = false;
+        static constexpr bool is_query = false;
+        static constexpr bool is_function = false;
+        static constexpr bool is_expr = true;
+        static constexpr bool is_asc = true;
+
+        brq::cons_list_t< cols... > _cols;
+        tuple( cols... c ) : _cols( c... ) {}
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            s << "( "; sql::print( s, _cols, id ); s << " )";
+        }
+
+        template< typename stmt > void bind( stmt &s ) const
+        {
+            _cols.each( [&]( const auto &c ) { sql::bind( s, c ); } );
+        }
+    };
+
+    template< typename col >
+    struct excluded : col
+    {
+        template< typename CT >
+        static std::string_view get_name( const CT & )
+        {
+            static auto name = "excluded." + std::string( col::get_name( col() ) );
+            return name;
+        }
+    };
+
+    template< typename col >
+    struct new_row : col
+    {
+        template< typename CT >
+        static std::string_view get_name( const CT & )
+        {
+            static auto name = "new." + std::string( col::get_name( col() ) );
+            return name;
+        }
+    };
+
+    template< typename type, typename... args >
+    struct function : constant< type >
+    {
+        static constexpr bool is_qualified = true;
+        static constexpr bool is_function  = true;
+
+        using args_t = brq::cons_list_t< args... >;
+        using bare = typename args_t::car_t;
+        args_t _args;
+        bool _print_type = true;
+
+        function( args... ts ) : _args( ts... ) {}
+        function() = default;
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            s << "( ";
+            sql::print< true >( s, _args, id );
+            s << " )";
+            if ( _print_type )
+                if constexpr ( !std::is_same_v< type, aggregate_type > &&
+                               !std::is_same_v< type, unknown_type > &&
+                               !std::is_same_v< type, expression_type > )
+                    s << "::" << sql_type< type >();
+        }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            _args.each( [&]( auto &v ) { sql::bind( s, v ); } );
+        }
+    };
+
+    template< typename... cols >
+    using endomorphism = function< typename cons_list_t< cols... >::car_t::type, cols... >;
+
+    template< typename col > struct count : function< int32_t, col >
+    {
+        explicit count( const col &c = col() ) : function< int32_t, col >( c ) {}
+    };
+
+    template< typename col > struct convert_from : function< std::u32string, col >
+    {
+        explicit convert_from( const col &c = col() ) : function< std::u32string, col >( c ) {}
+        template< typename stream > void print( stream &s, int &id ) const
+        {
+            s << "( ";
+            sql::print( s, this->_args, id );
+            s << ", 'utf8' )";
+        }
+    };
+
+    template< typename col > struct length : function< int32_t, col >
+    {
+        explicit length( const col &c = col() ) : function< int32_t, col >( c ) {}
+    };
+
+#define BRICK_SQL_ENDO(n) \
+    template< typename... cols > struct n : endomorphism< cols... > \
+    { explicit n( cols... cs ) : endomorphism< cols... >( cs... ) {} n() = default; }
+
+    BRICK_SQL_ENDO( bool_and );
+    BRICK_SQL_ENDO( bool_or );
+    BRICK_SQL_ENDO( min );
+    BRICK_SQL_ENDO( max );
+    BRICK_SQL_ENDO( string_agg );
+    BRICK_SQL_ENDO( sum );
+    BRICK_SQL_ENDO( avg );
+    BRICK_SQL_ENDO( greatest );
+    BRICK_SQL_ENDO( least );
+    BRICK_SQL_ENDO( distinct );
+    BRICK_SQL_ENDO( every );
+
+#undef BRICK_SQL_ENDO
+
+    struct row_number : constant< void, true > {};
+
+    template< typename col, typename type > struct cast_to : function< type, col >
+    {
+        static constexpr const bool is_query = true;
+        static constexpr const bool is_column = false;
+        static constexpr const bool is_function = false;
+        using function< type, col >::function;
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            s << "(";
+            sql::print( s, this->_args, id );
+            s << ")::" << sql_type< type >();
+        }
+
+        void print_tail( string_builder &, int & ) const {}
+    };
+
+    template< typename col > struct cast
+    {
+        col _col;
+        cast( const col &c ) : _col( c ) {}
+
+        template< typename T >
+        cast_to< col, T > to() { return { _col }; }
+    };
+
+    template< typename... cols >
+    struct coalesce : endomorphism< cols... >
+    {
+        coalesce( const cols & ... v ) : endomorphism< cols... >( v... ) {}
+    };
+
+    template< typename col >
+    struct substring : endomorphism< col >
+    {
+        std::string _pat;
+
+        substring( const col &c, std::string_view p ) : endomorphism< col >( c ), _pat( p ) {}
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            s << "( ";
+            sql::print( s, this->_args, id );
+            s << " from '" << _pat << "' )::" << sql_type< typename col::type >();
+        }
+    };
+
+    template< typename col >
+    struct percentile_disc : endomorphism< col >
+    {
+        int _frac;
+        percentile_disc( const col &c, double p ) : endomorphism< col >( c ), _frac( p ) {}
+
+        template< typename stream >
+        void print( stream &s, int &id ) const
+        {
+            s << "( " << _frac << " / 100.0 ) within group ( order by ";
+            sql::print( s, this->_args, id );
+            s << " )::" << sql_type< typename col::type >();
+        }
+    };
+
+    template< typename X > using to_void = void;
+    template< typename T, typename = void > struct type_of { using type = unknown_type; };
+    template< typename T >
+    struct type_of< T, to_void< typename T::type > > { using type = typename T::type; };
+
+    template< typename... args >
+    struct where_expr : column_flags
+    {
+        static constexpr bool is_expr = true;
+        static constexpr bool is_asc  = true;
+
+        using args_t = cons_list_t< args... >;
+        using type = std::conditional_t< sizeof...( args ) == 1,
+                                         typename type_of< typename args_t::car_t >::type,
+                                         expression_type >;
+
+        args_t _args;
+        bool _parens = false;
+
+        where_expr( args... as ) : _args( as... ) {}
+        where_expr() = default;
+
+        template< typename T >
+        cast_to< where_expr, T > as() const { return { *this }; }
+
+        template< typename stream >
+        stream &print( stream &s, int &id ) const
+        {
+            s << ( _parens ? "( " : "" );
+            _args.each( [&]( auto v ) { sql::print< true >( s, v, id ); s << " "; } );
+            return s << ( _parens ? ")" : "" );
+        }
+
+        template< typename stmt >
+        void bind( stmt &s ) const
+        {
+            _args.each( [&]( auto &v ) { sql::bind( s, v ); } );
+        }
+    };
+
+    template< typename T >
+    auto set_nested( T &t, brq::primary_t ) -> decltype( t._parens )
+    {
+        return t._parens = true;
+    }
+
+    template< typename T >
+    auto set_nested( T &t, brq::primary_t ) -> decltype( t._print_type )
+    {
+        return t._print_type = false;
+    }
+
+    template< typename T >
+    void set_nested( T &, brq::fallback ) {}
+
+    template< typename... args_t >
+    struct where_expr_nested : where_expr< args_t... >
+    {
+        where_expr_nested( args_t... args ) : where_expr< args_t... >( args... )
+        {
+            this->_args.each( [&]( auto &v ) { set_nested( v, primary ); } );
+        }
+    };
+
+    template< template< typename... > class expr_t, typename... args_t >
+    using op_t_ = std::enable_if_t< ( is_expr_v< std::decay_t< args_t > > || ... ),
+                                    expr_t< std::decay_t< args_t > ... > >;
+
+    template< typename... args_t > using op_t   = op_t_< where_expr, args_t... >;
+    template< typename... args_t > using nest_t = op_t_< where_expr_nested, args_t... >;
+
+    using w_op = where_operator;
+
+
+#define BRICK_SQL_OP_(op, sql) \
+    template< typename A, typename B > nest_t< A, w_op, B > op( A &&a, B &&b ) { return { a, sql, b }; }
+#define BRICK_SQL_OP(op) BRICK_SQL_OP_(operator op, #op)
+
+BRICK_SQL_OP_( operator ==, "=" )
+BRICK_SQL_OP_( like, "like" )
+BRICK_SQL_OP_( re, "~" )
+BRICK_SQL_OP_( re_i, "~*" )
+BRICK_SQL_OP_( similar, "similar to" )
+BRICK_SQL_OP_( operator &&, "and" )
+BRICK_SQL_OP_( operator ||, "or" )
+BRICK_SQL_OP_( operator ^, "#" )
+BRICK_SQL_OP_( pow, "^" )
+BRICK_SQL_OP_( in, "in" )
+BRICK_SQL_OP_( cat, "||" )
+
+BRICK_SQL_OP( < )
+BRICK_SQL_OP( > )
+BRICK_SQL_OP( <= )
+BRICK_SQL_OP( >= )
+BRICK_SQL_OP( != )
+BRICK_SQL_OP( + )
+BRICK_SQL_OP( - )
+BRICK_SQL_OP( * )
+BRICK_SQL_OP( / )
+BRICK_SQL_OP( % )
+BRICK_SQL_OP( & )
+BRICK_SQL_OP( | )
+
+#undef BRICK_SQL_OP
+
+    template< typename P, typename O >
+    auto window( P partition, O order )
+    {
+        if constexpr ( std::is_same_v< O, brq::unit > )
+            return where_expr{ where_operator( "partition by" ), partition };
+        else
+            return where_expr{ where_operator( "partition by" ), partition,
+                               where_operator( "order by" ), order };
+    }
+
+    template< typename F, typename P, typename O = brq::unit >
+    auto over( F function, P partition, O order = O() )
+    {
+        auto w = window( partition, order );
+        set_nested( function, primary );
+        set_nested( w, primary );
+        return where_expr{ function, where_operator( "over" ), w };
+    }
+
+    template< typename A > op_t< A, w_op > is_null( A &&a )   { return { a, "is null" }; }
+    template< typename A > op_t< A, w_op > is_true( A &&a )   { return { a, "is true" }; }
+    template< typename A > op_t< A, w_op > desc( A &&a )      { return { a, "desc" }; }
+    template< typename A > op_t< A, w_op > asc( A &&a )       { return { a, "asc" }; }
+
+    template< typename A > op_t< w_op, A > operator!( A &&a )
+    {
+        set_nested( a, primary );
+        return { "not", a };
+    }
+
+    template< typename C, typename T, typename E >
+    op_t< w_op, C, w_op, T, w_op, E, w_op > when( C c, T t, E e )
+    {
+        return { "case", c, "when true then", t, "else", e, "end" };
+    }
+
+    struct all_of : opaque_vec
+    {
+        using type = bool;
+        using opaque_vec::opaque_vec;
+        void print( string_builder &b, int &id ) const
+        {
+            opaque_vec::print( b, id, "and", "true" );
+        }
+    };
+
+    struct any_of : opaque_vec
+    {
+        using type = bool;
+        using opaque_vec::opaque_vec;
+        void print( string_builder &b, int &id ) const
+        {
+            opaque_vec::print( b, id, "or", "false" );
+        }
+    };
+}

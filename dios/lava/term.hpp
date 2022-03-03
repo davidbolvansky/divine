@@ -73,7 +73,7 @@ namespace __lava
         template< typename T >
         static term any()
         {
-            constexpr auto op = brq::smt_match_op< brq::smt_op_var, bitwidth_v< T > >;
+            constexpr auto op = brq::smt_match_op< brq::smt_op_var, T >;
             return { brq::smt_atom_t< brq::smt_varid_t >( op, counter() ) };
         }
 
@@ -84,7 +84,8 @@ namespace __lava
                 NOT_IMPLEMENTED();
             else
             {
-                constexpr auto op = brq::smt_match_op< brq::smt_op_const, bitwidth_v< T > >;
+                static_assert( std::is_arithmetic_v< T > || std::is_pointer_v< T > );
+                constexpr auto op = brq::smt_match_op< brq::smt_op_const, T >;
                 return { brq::smt_atom_t< T >( op, value ) };
             }
         }

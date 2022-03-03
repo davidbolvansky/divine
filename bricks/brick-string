@@ -23,9 +23,26 @@
 #include <functional>
 #include <iomanip>
 #include <vector>
+#include <charconv>
+#include <codecvt>
 
 namespace brq
 {
+    template< typename T >
+    struct rawchr
+    {
+        T c;
+        rawchr( T c ) : c( c ) {}
+
+        template< typename stream >
+        friend auto operator<<( stream &out, rawchr< T > r ) -> decltype( out << "" )
+        {
+            return out << std::basic_string_view< T >( &r.c, 1 );
+        }
+    };
+
+    using rawchr32 = rawchr< char32_t >;
+
     template< int i = 0, typename... T >
     auto &operator<<( string_builder &b, const std::tuple< T... > &t ) noexcept
     {
@@ -56,9 +73,9 @@ namespace brq
     static string_builder &operator<<( string_builder &b, decltype( std::hex ) manip ) noexcept
     {
         if ( manip == std::hex )
-            b._hex = true;
+            b._d.hex = true;
         if ( manip == std::dec )
-            b._hex = false;
+            b._d.hex = false;
         return b;
     }
 
@@ -68,8 +85,9 @@ namespace brq
         int32_t mark;
 
         mark_t() = default;
-        explicit mark_t( string_builder &b ) : b( &b ), mark( b._offset ) {}
+        explicit mark_t( string_builder &b ) : b( &b ), mark( b._d.offset ) {}
         template< typename T > mark_t operator<<( T &&v ) { *b << std::forward< T >( v ); return *this; }
+        auto size() const { return b->size(); }
     };
 
     struct pad
@@ -80,18 +98,19 @@ namespace brq
         pad( int w, char ch = ' ' ) : width( w ), ch( ch ) {}
         pad( string_builder &b, pad p ) : mark( b ), width( p.width ), ch( p.ch ) {}
 
+        auto size() const { return mark.size(); }
         template< typename T > pad operator<<( T &&v ) { mark << std::forward< T >( v ); return *this; }
         static string_builder &write( string_builder &b, int width, int from, char ch, bool left )
         {
-            int output_width = b._offset - from;
+            int output_width = b._d.offset - from;
             if ( int pad = width - output_width; pad > 0 && b._make_space( pad ) )
             {
                 if ( left )
-                    std::memmove( b._buffer + from + pad, b._buffer + from, output_width + 1 );
+                    std::memmove( b._d.buffer + from + pad, b._d.buffer + from, output_width + 1 );
                 else
-                    b._buffer[ b._offset + pad ] = 0;
-                std::memset( b._buffer + ( left ? from : b._offset ), ch, pad );
-                b._offset += pad;
+                    b._d.buffer[ b._d.offset + pad ] = 0;
+                std::memset( b._d.buffer + ( left ? from : b._d.offset ), ch, pad );
+                b._d.offset += pad;
             }
             return b;
         }
@@ -125,9 +144,11 @@ namespace brq
         {}
 
         int size() { return _stream.size(); }
+        int rewind( int x ) { return _stream.rewind( x ); }
+        const char *buffer() { return _stream.buffer(); }
 
         template< typename T > auto process( const T &v, primary_t )
-            -> decltype( _transform.process( *this, v ) )
+            -> decltype( _transform.process( _stream, v ) )
         {
             return _transform.process( _stream, v );
         }
@@ -137,7 +158,7 @@ namespace brq
             int start = _stream.size();
             _stream << v;
             size_t count = _stream.size() - start;
-            _stream.size() = start;
+            _stream.rewind( start );
             char buf[ count ];
             std::memcpy( buf, _stream.buffer() + start, count );
             _transform.process( _stream, std::string_view( buf, count ) );
@@ -158,14 +179,15 @@ namespace brq
         const char *_start;
         int _split, _end;
 
-        template< typename T >
-        string_window( const T &sv )
+        string_window( std::string_view sv )
             : _start( sv.data() ), _split( 0 ), _end( sv.end() - sv.begin() )
         {}
 
-        std::string_view flush()
+        string_window( const std::string &s ) : string_window( std::string_view( s ) ) {}
+
+        std::string_view flush( int drop = 0 )
         {
-            std::string_view rv( _start, _split );
+            std::string_view rv( _start, _split - drop );
             _start += _split; _end -= _split; _split = 0;
             return rv;
         }
@@ -219,10 +241,36 @@ namespace brq
         return generator( [=]( auto s ) { return split( s, d, reverse ); }, s );
     }
 
-    static std::string tabulate( std::string_view s )
+    static auto splitter( std::u32string_view s, char32_t d, bool reverse = false )
+    {
+        return generator( [=]( auto s ) { return split( s, d, reverse ); }, s );
+    }
+
+    static auto replace( std::string_view str, std::string_view find, std::string_view repl )
+    {
+        string_builder b;
+
+        while ( !str.empty() )
+        {
+            auto pos = str.find( find );
+            b << str.substr( 0, pos );
+            if ( pos != str.npos )
+            {
+                b << repl;
+                str.remove_prefix( pos + find.size() );
+            }
+            else
+                str = "";
+        }
+
+        return std::string( b.data() );
+    }
+
+    template< typename char_t >
+    std::basic_string< char_t > tabulate( std::basic_string_view< char_t > s )
     {
         std::vector< int > cols;
-        std::string out;
+        std::basic_string< char_t > out;
 
         auto stop = [&]( int t, int c )
         {
@@ -230,14 +278,12 @@ namespace brq
                 cols.push_back( c );
             else
                 cols[ t ] = std::max( c, cols[ t ] );
-
-            return cols[ t ];
         };
 
         for ( auto line : splitter( s, '\n' ) )
             for ( int i = 0, c = 0, t = 0; i < int( line.size() ); ++ i, ++ c )
                 if ( line[ i ] == '\t' )
-                    c = stop( t ++, c + 1 );
+                    stop( t ++, c + 1 ), c = 0;
 
         for ( auto line : splitter( s, '\n' ) )
         {
@@ -247,17 +293,21 @@ namespace brq
                     for ( ; c < cols[ t ]; ++ c )
                         out += ' ';
                     ++ t;
+                    c = 0;
                 }
                 else
                     out += line[ i ];
             out += '\n';
         }
 
-        if ( s.back() != '\n' )
+        if ( !s.empty() && s.back() != '\n' )
             out.pop_back();
 
         return out;
     }
+
+    static inline std::string tabulate( std::string_view s ) { return tabulate< char >( s ); }
+    static inline std::u32string tabulate( std::u32string_view s ) { return tabulate< char32_t >( s ); }
 
     struct quote
     {
@@ -360,6 +410,13 @@ namespace brq
         return {};
     }
 
+    static parse_result from_string( std::string_view s, std::u32string &v )
+    {
+        std::wstring_convert< std::codecvt_utf8< char32_t >, char32_t > conv;
+        v = conv.from_bytes( &*s.begin(), &*s.end() );
+        return {};
+    }
+
     template< typename container >
     auto from_string( std::string_view s, container &c ) -> decltype( from_string( s, c.back() ) )
     {
@@ -367,6 +424,47 @@ namespace brq
         return from_string( s, c.back() );
     }
 
+    template< typename container > /* set-like things */
+    auto from_string( std::string_view s, container &c )
+        -> decltype( c.emplace(), from_string( s, std::declval< typename container::value_type & >() ) )
+    {
+        typename container::value_type val;
+        if ( auto rv = from_string( s, val ); !rv )
+            return rv;
+        c.insert( val );
+        return {};
+    }
+
+    struct c_str
+    {
+        const char *_data;
+        bool _owned = false;
+
+        c_str( const c_str & ) = delete;
+        c_str( const c_str && ) = delete;
+
+        explicit c_str( std::string_view sv )
+        {
+            if ( uintptr_t( sv.end() ) % 4096 == 0 || sv.end()[ 0 ] != 0 )
+            {
+                _owned = true;
+                char *data = new char[ sv.size() + 1 ];
+                std::copy( sv.begin(), sv.end(), data );
+                data[ sv.size() ] = 0;
+                _data = data;
+            }
+            else
+                _data = sv.begin();
+        }
+
+        operator const char*() { return _data; }
+
+        ~c_str()
+        {
+            if ( _owned )
+                delete[] _data;
+        }
+    };
 }
 
 namespace t_brq
@@ -387,6 +485,25 @@ namespace t_brq
             auto o = brq::tabulate( in );
             ASSERT_EQ( o, "hello war   again\n"
                           "sad   world prevails\n" );
+        }
+    };
+
+    struct format
+    {
+        TEST( pad )
+        {
+            ASSERT_EQ( brq::format( std::hex, brq::pad( 4, '0' ), 16, brq::mark ).data(),
+                       "0010" );
+        }
+    };
+
+    struct replace
+    {
+        TEST( sanity )
+        {
+            ASSERT_EQ( brq::replace( "foobar", "o", "xx" ), "fxxxxbar" );
+            ASSERT_EQ( brq::replace( "foobar", "ar", "x" ), "foobx" );
+            ASSERT_EQ( brq::replace( "xx", "x", "xx" ), "xxxx" );
         }
     };
 }

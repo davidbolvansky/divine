@@ -25,6 +25,7 @@ namespace brq
     struct curl
     {
         CURL *_curl = nullptr;
+        CURLU *_url = nullptr;
         curl_mime *_mime = nullptr;
         brq::string_builder _data;
 
@@ -53,9 +54,9 @@ namespace brq
             return nmemb;
         }
 
-        curl &add_arg( std::string_view n, std::string_view d )
+        curl &add_mime( std::string_view n, std::string_view d )
         {
-            TRACE( "add_arg", n, d );
+            TRACE( "add_mime", n, d );
             curl_easy_setopt( _curl, CURLOPT_MIMEPOST, _mime );
 
             auto part = curl_mime_addpart( _mime );
@@ -64,10 +65,47 @@ namespace brq
             return *this;
         }
 
+        curl &add_file( std::string_view n, std::string_view fn, std::string_view d )
+        {
+            TRACE( "add_file", n, fn, d );
+            curl_easy_setopt( _curl, CURLOPT_MIMEPOST, _mime );
+
+            auto part = curl_mime_addpart( _mime );
+            curl_mime_name( part, std::string( n ).c_str() );
+            curl_mime_filename( part, std::string( fn ).c_str() );
+            curl_mime_data( part, d.begin(), d.size() );
+            return *this;
+        }
+
+        curl &add_arg( std::string_view n, std::string_view d )
+        {
+            TRACE( "add_arg", n, d );
+            brq::string_builder b;
+            b << n << "=" << d;
+            curl_url_set( _url, CURLUPART_QUERY, b.buffer(), CURLU_APPENDQUERY | CURLU_URLENCODE );
+            return *this;
+        }
+
         curl &set_url( std::string_view url )
         {
             TRACE( "set_url", url);
-            curl_easy_setopt( _curl, CURLOPT_URL, std::string( url ).c_str() );
+            _url = curl_url();
+            curl_url_set( _url, CURLUPART_URL, std::string( url ).c_str(), 0 );
+            return *this;
+        }
+
+        curl &set_ua( std::string_view ua )
+        {
+            TRACE( "set_ua", ua );
+            curl_easy_setopt( _curl, CURLOPT_USERAGENT, std::string( ua ).c_str() );
+            return *this;
+        }
+
+        curl &set_auth( std::string_view user, std::string_view pass )
+        {
+            TRACE( "set_auth", user, pass );
+            curl_easy_setopt( _curl, CURLOPT_USERNAME, std::string( user ).c_str() );
+            curl_easy_setopt( _curl, CURLOPT_PASSWORD, std::string( pass ).c_str() );
             return *this;
         }
 
@@ -88,7 +126,11 @@ namespace brq
 
         curl &run()
         {
-            DEBUG( "request", info< string >( CURLINFO_EFFECTIVE_URL ) );
+            char *url;
+            curl_url_get( _url, CURLUPART_URL, &url, 0 );
+            DEBUG( "request", url );
+
+            curl_easy_setopt( _curl, CURLOPT_CURLU, _url );
 
             if ( auto err = curl_easy_perform( _curl ) )
                 brq::raise() << "curl error: " << curl_easy_strerror( err );
