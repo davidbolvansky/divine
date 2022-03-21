@@ -367,10 +367,10 @@ inline void replaceGlobalArray( llvm::GlobalVariable *glo, llvm::Constant *init 
                     idxs.push_back( *&i );
                 if ( constant )
                     constant->replaceAllUsesWith( llvm::ConstantExpr::getGetElementPtr(
-                                                      nullptr, newGlo, idxs ) );
+                                                      newGlo->getValueType(), newGlo, idxs ) );
                 else
                     llvm::ReplaceInstWithInst( gep, llvm::GetElementPtrInst::Create(
-                                                     nullptr, newGlo, idxs ) );
+                                                     newGlo->getValueType(), newGlo, idxs ) );
                 break;
             }
             case llvm::Instruction::PtrToInt:
@@ -893,7 +893,7 @@ void cloneCalleesRecursively( llvm::Function *fn, FunMap &map,
         for ( auto &ins : bb ) {
             if ( llvm::isa< llvm::IntrinsicInst >( ins ) )
                 continue;
-            auto *cb = llvm::cast< llvm::CallBase >( &ins );
+            auto *cb = llvm::dyn_cast< llvm::CallBase >( &ins );
             if ( cb ) {
                 auto *callee = cb->getCalledFunction();
                 callee = callee ? callee : onUnknown( *cb );

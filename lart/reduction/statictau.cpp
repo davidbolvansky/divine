@@ -31,7 +31,7 @@ struct SimpleEscape {
     static bool isAllocation( llvm::Instruction *i ) {
         if ( llvm::isa< llvm::AllocaInst >( i ) )
             return true;
-        auto *cb = llvm::cast< llvm::CallBase >( i );
+        auto *cb = llvm::dyn_cast< llvm::CallBase >( i );
         if ( !cb || !cb->getCalledOperand() )
             return false;
         auto name = cb->getCalledOperand()->getName();

@@ -32,10 +32,10 @@ void DiosCC::link_dios_config( std::string n, std::string lamp )
 void add_dios_header_paths( std::vector< std::string >& paths )
 {
     paths.insert( paths.end(),
-                 { "-isystem", "/dios/libcxx/include"
+                 { "-isystem", "/dios/include"
+                 , "-isystem", "/dios/libcxx/include"
                  , "-isystem", "/dios/libcxxabi/include"
-                 , "-isystem", "/dios/libunwind/include"
-                 , "-isystem", "/dios/include" } );
+                 , "-isystem", "/dios/libunwind/include" } );
 }
 
 void add_dios_defines( std::vector< std::string >& flags )
