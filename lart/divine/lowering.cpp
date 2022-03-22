@@ -52,15 +52,15 @@ struct LowerLLVM {
             case llvm::Intrinsic::sadd_with_overflow:
             case llvm::Intrinsic::usub_with_overflow:
             case llvm::Intrinsic::ssub_with_overflow:
-            case llvm::Intrinsic::smin:
-            case llvm::Intrinsic::smax:
-            case llvm::Intrinsic::umin:
-            case llvm::Intrinsic::umax:
-            case llvm::Intrinsic::abs:
-            case llvm::Intrinsic::sadd_sat:
-            case llvm::Intrinsic::ssub_sat:
-            case llvm::Intrinsic::uadd_sat:
-            case llvm::Intrinsic::usub_sat:
+            //case llvm::Intrinsic::smin:
+            //case llvm::Intrinsic::smax:
+            //case llvm::Intrinsic::umin:
+            //case llvm::Intrinsic::umax:
+            //case llvm::Intrinsic::abs:
+            //case llvm::Intrinsic::sadd_sat:
+            //case llvm::Intrinsic::ssub_sat:
+            //case llvm::Intrinsic::uadd_sat:
+            //case llvm::Intrinsic::usub_sat:
             case llvm::Intrinsic::dbg_declare:
             case llvm::Intrinsic::dbg_value:
             case llvm::Intrinsic::lifetime_start:

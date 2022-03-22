@@ -160,33 +160,6 @@ namespace divine::vm
                                                 []( auto a, auto b ) { return b < 0
                                                     ? a > _maxbound( a ) + b
                                                     : a < _minbound( a ) + b; } );
-            case Intrinsic::smin:
-                //fault( _VM_F_Control ) << "abs";
-                return;
-            case Intrinsic::smax:
-                //fault( _VM_F_Control ) << "abs";
-                return;
-            case Intrinsic::umin:
-                //fault( _VM_F_Control ) << "abs";
-                return;
-            case Intrinsic::umax:
-                //fault( _VM_F_Control ) << "abs";
-                return;
-            case Intrinsic::abs:
-                //fault( _VM_F_Control ) << "abs";
-                return;
-            case Intrinsic::sadd_sat:
-                //fault( _VM_F_Control ) << "abs";
-                return;
-            case Intrinsic::ssub_sat:
-                //fault( _VM_F_Control ) << "abs";
-                return;
-            case Intrinsic::uadd_sat:
-                //fault( _VM_F_Control ) << "abs";
-                return;
-            case Intrinsic::usub_sat:
-                //fault( _VM_F_Control ) << "abs";
-                return;
             case Intrinsic::stacksave:
                 return implement_stacksave();
             case Intrinsic::stackrestore:

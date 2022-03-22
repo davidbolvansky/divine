@@ -743,8 +743,11 @@ void Eval< Ctx >::dispatch() /* evaluate a single instruction */
         case OpCode::LandingPad: break; /* nothing to do, handled by the unwinder */
         case OpCode::Fence: break; /* noop until we have reordering simulation */
 
+        case OpCode::Freeze:
+            return op< Any >( 0, [&]( auto v ) { this->result( v.get( 1 ) ); } );
+
         default:
-            UNREACHABLE( "unknown opcode", instruction().opcode );
+            UNREACHABLE( "unknown instruction", opname ( instruction().opcode ) );
     }
 }
 

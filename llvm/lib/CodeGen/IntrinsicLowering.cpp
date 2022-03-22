@@ -422,6 +422,56 @@ void IntrinsicLowering::LowerIntrinsicCall(CallInst *CI) {
     ReplaceFPIntrinsicWithCall(CI, "roundf", "round", "roundl");
     break;
   }
+  // ------ DIVINE ------
+  case Intrinsic::rint: {
+    ReplaceFPIntrinsicWithCall(CI, "rintf", "rint", "rintl");
+    break;
+  }
+  case Intrinsic::fabs: {
+    ReplaceFPIntrinsicWithCall(CI, "fabsf", "fabs", "fabsl");
+    break;
+  }
+  case Intrinsic::smax: {
+    Value *A = CI->getArgOperand(0);
+    Value *B = CI->getArgOperand(1);
+    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_SGT, A, B), A, B);
+    CI->replaceAllUsesWith(Sel);
+    break;
+  }
+  case Intrinsic::smin: {
+    Value *A = CI->getArgOperand(0);
+    Value *B = CI->getArgOperand(1);
+    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_SLT, A, B), A, B);
+    CI->replaceAllUsesWith(Sel);
+    break;
+  }
+  case Intrinsic::umax: {
+    Value *A = CI->getArgOperand(0);
+    Value *B = CI->getArgOperand(1);
+    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_UGT, A, B), A, B);
+    CI->replaceAllUsesWith(Sel);
+    break;
+  }
+  case Intrinsic::umin: {
+    Value *A = CI->getArgOperand(0);
+    Value *B = CI->getArgOperand(1);
+    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_ULT, A, B), A, B);
+    CI->replaceAllUsesWith(Sel);
+    break;
+  }
+  case Intrinsic::usub_sat: {
+    Value *A = CI->getArgOperand(0);
+    Value *B = CI->getArgOperand(1);
+    Value *Sub = Builder.CreateSub(A, B);
+    Constant *Zero = ConstantInt::getNullValue(CI->getType());
+    // usub.sat(a, b) --> (a > b) ? a - b : 0
+    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_UGT, A, B), Sub, Zero);
+    CI->replaceAllUsesWith(Sel);
+    break;
+  }
+
+  // TODO more satured ops
+  // ------ DIVINE ------
   case Intrinsic::roundeven: {
     ReplaceFPIntrinsicWithCall(CI, "roundevenf", "roundeven", "roundevenl");
     break;
