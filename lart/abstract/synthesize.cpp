@@ -92,7 +92,7 @@ namespace lart::abstract
             auto fty = thawFn->getFunctionType();
             auto addr = irb.CreateBitCast( value, fty->getParamType( 0 ) );
 
-            return irb.CreateCall( fty, { addr } );
+            return irb.CreateCall( fty, thawFn, { addr } );
         }
 
         template< typename IRB >
