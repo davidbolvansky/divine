@@ -45,10 +45,10 @@ namespace divine::cc
 
         void add( Pass *P ) override
         {
-            legacy::PassManager::add( P );
-
             if( auto printer = dynamic_cast< AsmPrinter* >( P ) )
                 mc = printer->OutStreamer.get();
+
+            legacy::PassManager::add( P );
         }
     };
 
