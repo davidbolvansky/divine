@@ -223,6 +223,8 @@ fmt( "F_GETLK" );
 fmt( "F_SETLK" );
 fmt( "F_SETLKW" );
 
+fmt( "HOST_NAME_MAX" );
+
 fmt( "_PC_LINK_MAX" );
 fmt( "_PC_MAX_CANON" );
 fmt( "_PC_MAX_INPUT" );
