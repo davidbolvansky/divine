@@ -128,15 +128,17 @@ void BitCode::_save_original_module()
 BitCode::BitCode( std::string file )
 {
     _ctx.reset( new llvm::LLVMContext() );
-    std::unique_ptr< llvm::MemoryBuffer > input;
 
     using namespace llvm::object;
 
-    input = std::move( llvm::MemoryBuffer::getFile( file ).get() );
-    auto bc = IRObjectFile::findBitcodeInMemBuffer( input->getMemBufferRef() );
+    llvm::ErrorOr<std::unique_ptr<MemoryBuffer>> BufferOrErr = llvm::MemoryBuffer::getFile(file);
+    if (!BufferOrErr)
+        throw BCParseError( "Input model not found." );
+
+    auto bc = IRObjectFile::findBitcodeInMemBuffer( BufferOrErr.get()->getMemBufferRef() );
 
     if ( !bc )
-        std::cerr << toString( bc.takeError() ) << std::endl;
+        throw BCParseError(toString( bc.takeError() ) );
     auto parsed = llvm::parseBitcodeFile( bc.get(), *_ctx );
     if ( !parsed )
         throw BCParseError( "Error parsing input model; probably not a valid bitcode file." );
