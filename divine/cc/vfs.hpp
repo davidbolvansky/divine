@@ -146,9 +146,9 @@ namespace divine::cc
             auto it = filemap.find( path );
             if ( it != filemap.end() )
                 return statpath( path, it->second.second );
-            else if ( allowed( path ) )
+            //else if ( allowed( path ) )
                 return { doesNotExist() };
-            return { blockAccess( path ) };
+            //return { blockAccess( path ) };
         }
 
         auto openFileForRead( const llvm::Twine &_path ) ->
@@ -159,9 +159,9 @@ namespace divine::cc
             auto it = filemap.find( path );
             if ( it != filemap.end() )
                 return mkfile( it, statpath( path, it->second.second ) );
-            else if ( allowed( path ) )
+            //else if ( allowed( path ) )
                 return { doesNotExist() };
-            return { blockAccess( path ) };
+            //return { blockAccess( path ) };
         }
 
         auto dir_begin( const llvm::Twine &_path, std::error_code & ) ->
