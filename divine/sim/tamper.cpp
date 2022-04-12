@@ -60,7 +60,7 @@ template< typename IRBuilder >
 void prepareDebugMetadata( IRBuilder & irb )
 {
     auto *discope = irb.GetInsertBlock()->getParent()->getSubprogram();
-    auto dl = llvm::DebugLoc(  discope ).get();
+    auto dl = llvm::DILocation::get( discope->getContext(), 0, 0, discope );
     irb.SetCurrentDebugLocation( dl );
 }
 
