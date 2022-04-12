@@ -169,8 +169,8 @@ void rewire_calls_t::init()
 {
 
     auto is_indirect_call = [&]( auto &inst ) {
-        auto cb = llvm::cast < llvm::CallBase > ( &inst );
-        return ( llvm::isa< llvm::CallInst> ( cb ) || llvm::isa< llvm::InvokeInst> ( cb ) ) && cb->isIndirectCall();
+        auto cb = llvm::dyn_cast < llvm::CallBase > ( &inst );
+        return cb && cb->isIndirectCall();
     };
 
     auto calls = call_types_t< llvm::CallInst, llvm::InvokeInst >( _module, is_indirect_call );

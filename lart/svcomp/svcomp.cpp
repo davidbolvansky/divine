@@ -75,7 +75,7 @@ struct NondetTracking {
 
     void track( llvm::Function &fn ) {
         auto calls = query::query( fn ).flatten()
-                          .map( []( auto &i ) { return llvm::cast< llvm::CallBase >( &i ); } )
+                          .map( []( auto &i ) { return llvm::dyn_cast< llvm::CallBase >( &i ); } )
                           .filter( [this]( auto &cb ) {
                               if ( !cb )
                                   return false;

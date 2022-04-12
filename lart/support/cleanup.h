@@ -122,7 +122,7 @@ void atExits( llvm::Function &fn, AtExit &&atExit ) {
 template< typename AfterCall /* void ( CallSite &, llvm::IRBuilder<> ) */ >
 void afterCalls( llvm::Function &fn, AfterCall &&afterCall, bool include_intrinsics = false ) {
     auto calls = query::query( fn ).flatten()
-            .map( []( auto &i ) { return llvm::cast< llvm::CallBase >( &i ); } )
+            .map( []( auto &i ) { return llvm::dyn_cast< llvm::CallBase >( &i ); } )
             .filter( [&]( auto &cb ) { return cb && (include_intrinsics
                                                      || !cb->getCalledFunction()
                                                      || !cb->getCalledFunction()->getIntrinsicID()); } )

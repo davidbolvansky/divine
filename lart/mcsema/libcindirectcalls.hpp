@@ -70,7 +70,7 @@ struct libc_indirect_calls : abstract::LLVMUtil< libc_indirect_calls >
             .flatten()
             .filter( []( auto &inst )
                {
-                   auto *cb = llvm::cast< llvm::CallBase >( &inst );
+                   auto *cb = llvm::dyn_cast< llvm::CallBase >( &inst );
                    return cb && cb->isIndirectCall();
                } )
             .map( []( auto &inst ){ return &inst; } )

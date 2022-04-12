@@ -168,7 +168,7 @@ struct Substitute {
 
     auto getCallSites( llvm::Function *fn ) {
         return query::query( fn->users() )
-                    .filter( query::is< llvm::CallInst > || query::is< llvm::InvokeInst > )
+                    .filter( query::is< llvm::CallBase > )
                     .filter( [&]( llvm::User *i ) {
                         return _bypass.count( llvm::cast< llvm::Instruction >( i )->getParent()->getParent() ) == 0;
                     } )
