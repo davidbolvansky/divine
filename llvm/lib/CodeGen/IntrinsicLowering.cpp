@@ -434,43 +434,91 @@ void IntrinsicLowering::LowerIntrinsicCall(CallInst *CI) {
   case Intrinsic::smax: {
     Value *A = CI->getArgOperand(0);
     Value *B = CI->getArgOperand(1);
-    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_SGT, A, B), A, B);
+    Value *FrozenA = Builder.CreateFreeze(A);
+    Value *FrozenB = Builder.CreateFreeze(B);
+    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_SGT, FrozenA, B), FrozenA, FrozenB);
     CI->replaceAllUsesWith(Sel);
     break;
   }
   case Intrinsic::smin: {
     Value *A = CI->getArgOperand(0);
     Value *B = CI->getArgOperand(1);
-    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_SLT, A, B), A, B);
+    Value *FrozenA = Builder.CreateFreeze(A);
+    Value *FrozenB = Builder.CreateFreeze(B);
+    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_SLT, FrozenA, B), FrozenA, FrozenB);
     CI->replaceAllUsesWith(Sel);
     break;
   }
   case Intrinsic::umax: {
     Value *A = CI->getArgOperand(0);
     Value *B = CI->getArgOperand(1);
-    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_UGT, A, B), A, B);
+    Value *FrozenA = Builder.CreateFreeze(A);
+    Value *FrozenB = Builder.CreateFreeze(B);
+    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_UGT, FrozenA, B), FrozenA, FrozenB);
     CI->replaceAllUsesWith(Sel);
     break;
   }
   case Intrinsic::umin: {
     Value *A = CI->getArgOperand(0);
     Value *B = CI->getArgOperand(1);
-    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_ULT, A, B), A, B);
+    Value *FrozenA = Builder.CreateFreeze(A);
+    Value *FrozenB = Builder.CreateFreeze(B);
+    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_ULT, FrozenA, B), FrozenA, FrozenB);
+    CI->replaceAllUsesWith(Sel);
+    break;
+  }
+  case Intrinsic::abs: {
+    Value *A = CI->getArgOperand(0);
+    Constant *Zero = ConstantInt::getNullValue(CI->getType());
+    Value *FrozenA = Builder.CreateFreeze(A);
+    Value *NegA = Builder.CreateSub(Zero, FrozenA);
+    // abs(a) --> a < 0 : -a : a
+    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_SLT, FrozenA, Zero), NegA, FrozenA);
     CI->replaceAllUsesWith(Sel);
     break;
   }
   case Intrinsic::usub_sat: {
     Value *A = CI->getArgOperand(0);
     Value *B = CI->getArgOperand(1);
-    Value *Sub = Builder.CreateSub(A, B);
+    Value *FrozenA = Builder.CreateFreeze(A);
+    Value *FrozenB = Builder.CreateFreeze(B);
+    Value *Sub = Builder.CreateSub(FrozenA, FrozenB);
     Constant *Zero = ConstantInt::getNullValue(CI->getType());
     // usub.sat(a, b) --> (a > b) ? a - b : 0
-    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_UGT, A, B), Sub, Zero);
+    Value *Sel = Builder.CreateSelect(Builder.CreateICmp(ICmpInst::ICMP_UGT, FrozenA, FrozenB), Sub, Zero);
     CI->replaceAllUsesWith(Sel);
     break;
   }
 
   // TODO more satured ops
+  case Intrinsic::fshl: {
+    Value *A = CI->getArgOperand(0);
+    Value *B = CI->getArgOperand(1);
+    Value *ShAmt = CI->getArgOperand(1);
+    Value *FrozenShAmt = Builder.CreateFreeze(ShAmt);
+    // (A << ShAmt) | (B >> (BW - ShAmt))
+    Value *OrLHS = Builder.CreateShl(A, FrozenShAmt);
+    Value *BW = ConstantInt::get(CI->getType(), CI->getType()->getScalarSizeInBits());
+    Value *Sub = Builder.CreateSub(BW, FrozenShAmt);
+    Value *OrRHS = Builder.CreateLShr(B, Sub);
+    Value *Or = Builder.CreateOr(OrLHS, OrRHS);
+    CI->replaceAllUsesWith(Or);
+    break;
+  }
+  case Intrinsic::fshr: {
+    Value *A = CI->getArgOperand(0);
+    Value *B = CI->getArgOperand(1);
+    Value *ShAmt = CI->getArgOperand(1);
+    Value *FrozenShAmt = Builder.CreateFreeze(ShAmt);
+    // (A << (BW - ShAmt)) | (B >> ShAmt)
+    Value *BW = ConstantInt::get(CI->getType(), CI->getType()->getScalarSizeInBits());
+    Value *Sub = Builder.CreateSub(BW, FrozenShAmt);
+    Value *OrLHS = Builder.CreateShl(A, Sub);
+    Value *OrRHS = Builder.CreateLShr(B, FrozenShAmt);
+    Value *Or = Builder.CreateOr(OrLHS, OrRHS);
+    CI->replaceAllUsesWith(Or);
+    break;
+  }
   // ------ DIVINE ------
   case Intrinsic::roundeven: {
     ReplaceFPIntrinsicWithCall(CI, "roundevenf", "roundeven", "roundevenl");
