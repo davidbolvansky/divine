@@ -322,10 +322,8 @@ Program::Position Program::insert( Position p )
         insn.subcode = lx::DbgBitCast;
     }
 
-    if ( dyn_cast< llvm::CallInst >( p.I ) ||
-         dyn_cast< llvm::InvokeInst >( p.I ) )
+    if ( auto *CB = llvm::dyn_cast< llvm::CallBase >( p.I ) )
     {
-        auto *CB = llvm::cast< llvm::CallBase>( &*p.I );
         llvm::Function *F = CB->getCalledFunction();
         if ( F ) // you can actually invoke a label
             switch ( F->getIntrinsicID() )
