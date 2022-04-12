@@ -93,6 +93,10 @@ IRObjectFile::findBitcodeInMemBuffer(MemoryBufferRef Object) {
   case file_magic::bitcode:
     return Object;
   case file_magic::elf_relocatable:
+  // --- DIVINE ---
+  case file_magic::elf_executable:
+  case file_magic::elf_shared_object:
+  // --- DIVINE
   case file_magic::macho_object:
   case file_magic::wasm_object:
   case file_magic::coff_object: {
