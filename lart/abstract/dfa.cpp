@@ -7,6 +7,7 @@ DIVINE_RELAX_WARNINGS
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/InstVisitor.h>
+#include "llvm/IR/LegacyPassManager.h"
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Utils/UnifyFunctionExitNodes.h>
 #include <llvm/Transforms/Utils.h>
@@ -137,8 +138,9 @@ namespace lart::abstract
         auto lse = std::unique_ptr< llvm::FunctionPass >( lart::createLowerSelectPass() );
         lse.get()->runOnFunction( *fn );
 
-        auto lsi = std::unique_ptr< llvm::FunctionPass >( llvm::createLowerSwitchPass() );
-        lsi.get()->runOnFunction( *fn );
+        llvm::legacy::FunctionPassManager FPM(fn->getParent());
+        FPM.add(llvm::createLowerSwitchPass());
+        FPM.run(*fn);
 
         lower_constant_expr( *fn );
 
