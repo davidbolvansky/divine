@@ -168,14 +168,15 @@ namespace divine::vm
             {
                 auto size = operand< IntV >( 0 );
                 auto op = operand< PointerV >( 1 );
-                if ( !heap().valid( op.cooked() ) )
+                if ( size.cooked() && !heap().valid( op.cooked() ) )
                     heap().make( size.cooked(), op.cooked().object(), true );
                 return;
             }
             case Intrinsic::lifetime_end:
             {
+                auto size = operand< IntV >( 0 );
                 auto op = operand< PointerV >( 1 );
-                if ( !freeobj( op.cooked() ) )
+                if ( size.cooked() && !freeobj( op.cooked() ) )
                     fault( _VM_F_Memory ) << "invalid pointer passed to llvm.lifetime.end";
                 return;
             }
