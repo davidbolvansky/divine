@@ -76,7 +76,7 @@ extern char __nan[];
 #define	MATH_ERREXCEPT	2
 #define	math_errhandling	MATH_ERREXCEPT
 
-#define fpclassify(x) __builtin_fpclassify(x)
+#define fpclassify(x) __builtin_fpclassify(FP_NAN, FP_INFINITE, FP_NORMAL, FP_SUBNORMAL, FP_ZERO, x)
 #define isfinite(x) __builtin_isfinite(x)
 #define isnormal(x) __builtin_isnormal(x)
 #define signbit(x) __builtin_signbit(x)
