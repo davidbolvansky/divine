@@ -53,7 +53,7 @@ namespace divine::vm
     template< typename Ctx >
     void Eval< Ctx >::implement_call( bool invoke )
     {
-        auto targetV = operand< PointerV >( invoke ? -3 : -1 );
+        auto targetV = operand< PointerV >( -1 );
 
         if ( !targetV.defined() )
         {
@@ -85,7 +85,8 @@ namespace divine::vm
         if ( target != program().entry( target ) )
         {
             fault( _VM_F_Control ) << "invalid call on a code pointer which does not point "
-                                    << "to a function entry: " << target;
+                                    << "to a function entry: " << target
+                                    << ", entry: " << program().entry( target );
             return;
         }
 
@@ -208,7 +209,7 @@ namespace divine::vm
 
         if ( caller.opcode == OpCode::Invoke )
         {
-            auto rv = s2ptr( caller.operand( -2 ), 0, parent.cooked() );
+            auto rv = s2ptr( caller.operand( -3 ), 0, parent.cooked() );
             heap().read( rv, br );
             local_jump( br );
         }
